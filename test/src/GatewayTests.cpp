@@ -25,18 +25,19 @@ namespace {
         // Properties
 
         bool closed = false;
+        CloseCallback onClose;
 
         // Methods
 
+        void RemoteClose() {
+            if (onClose != nullptr) {
+                onClose();
+            }
+        }
+
         // Discord::WebSocket
 
-        virtual void OnClose(std::promise< void >&& onClose) override {
-        }
-
-        virtual void OnText(ReceiveCallback&& onText) override {
-        }
-
-        virtual void OnBinary(ReceiveCallback&& onBinary) override {
+        virtual void Binary(std::string&& message) override {
         }
 
         virtual void Close() override {
@@ -46,7 +47,14 @@ namespace {
         virtual void Text(std::string&& message) override {
         }
 
-        virtual void Binary(std::string&& message) override {
+        virtual void RegisterBinaryCallback(ReceiveCallback&& onBinary) override {
+        }
+
+        virtual void RegisterCloseCallback(CloseCallback&& onClose) override {
+            this->onClose = std::move(onClose);
+        }
+
+        virtual void RegisterTextCallback(ReceiveCallback&& onText) override {
         }
     };
 
@@ -419,7 +427,7 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_After_Receiving_WebSocket_
     ASSERT_TRUE(connections->RequireWebSocketRequests(1));
     auto& requestWithPromise = connections->webSocketRequests[0];
     EXPECT_EQ(
-        webSocketEndpoint,
+        webSocketEndpoint + "/?v=6&encoding=json",
         requestWithPromise.request.uri
     );
 }
@@ -585,4 +593,38 @@ TEST_F(GatewayTests, Second_Connect_Fails_After_Failed_Second_WebSocket_Attempt_
     // Assert
     EXPECT_TRUE(connectedReady);
     EXPECT_FALSE(connected.get());
+}
+
+TEST_F(GatewayTests, Close_Callback_When_WebSocket_Closed_After_Callback_Registered) {
+    // Arrange
+    ASSERT_TRUE(Connect());
+
+    // Act
+    bool closed = false;
+    gateway.RegisterCloseCallback(
+        [&]{
+            closed = true;
+        }
+    );
+    webSocket->RemoteClose();
+
+    // Assert
+    EXPECT_TRUE(closed);
+}
+
+TEST_F(GatewayTests, Close_Callback_When_WebSocket_Closed_Before_Callback_Registered) {
+    // Arrange
+    ASSERT_TRUE(Connect());
+
+    // Act
+    webSocket->RemoteClose();
+    bool closed = false;
+    gateway.RegisterCloseCallback(
+        [&]{
+            closed = true;
+        }
+    );
+
+    // Assert
+    EXPECT_TRUE(closed);
 }

@@ -11,6 +11,7 @@
 #include "Connections.hpp"
 #include "TimeKeeper.hpp"
 
+#include <functional>
 #include <future>
 #include <memory>
 
@@ -20,6 +21,10 @@ namespace Discord {
      * This is used to communicate with Discord's gateway services.
      */
     class Gateway {
+        // Types
+    public:
+        using CloseCallback = std::function< void() >;
+
         // Lifecycle management
     public:
         ~Gateway() noexcept;
@@ -41,6 +46,8 @@ namespace Discord {
             const std::shared_ptr< Connections >& connections,
             const std::string& userAgent
         );
+
+        void RegisterCloseCallback(CloseCallback&& onClose);
 
         void Disconnect();
 

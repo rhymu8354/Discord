@@ -18,11 +18,15 @@ namespace Discord {
     /**
      * This contains the private properties of a Gateway instance.
      */
-    struct Gateway::Impl {
+    struct Gateway::Impl
+        : public std::enable_shared_from_this< Impl >
+    {
         // Properties
 
+        bool closed = false;
         bool connecting = false;
         std::mutex mutex;
+        CloseCallback onClose;
         std::shared_ptr< WebSocket > webSocket;
         std::string webSocketEndpoint;
 
@@ -69,22 +73,25 @@ namespace Discord {
                     connections->QueueWebSocketRequest({webSocketEndpoint}),
                     lock
                 );
-                if (webSocket != nullptr) {
-                    return true;
+            }
+            if (!webSocket) {
+                webSocketEndpoint = GetGateway(connections, userAgent, lock);
+                if (webSocketEndpoint.empty()) {
+                    return false;
                 }
+                webSocket = Await(
+                    connections->QueueWebSocketRequest({
+                        webSocketEndpoint + "/?v=6&encoding=json"
+                    }),
+                    lock
+                );
             }
-            webSocketEndpoint = GetGateway(connections, userAgent, lock);
-            if (webSocketEndpoint.empty()) {
+            if (webSocket) {
+                RegisterWebSocketCallbacks();
+                return true;
+            } else {
                 return false;
             }
-            webSocket = Await(
-                connections->QueueWebSocketRequest({webSocketEndpoint}),
-                lock
-            );
-            if (webSocket == nullptr) {
-                return false;
-            }
-            return true;
         }
 
         bool Connect(
@@ -95,6 +102,7 @@ namespace Discord {
             if (webSocket || connecting) {
                 return false;
             }
+            closed = false;
             connecting = true;
             const auto connected = CompleteConnect(
                 connections,
@@ -111,6 +119,47 @@ namespace Discord {
             }
             webSocket->Close();
             webSocket = nullptr;
+        }
+
+        void NotifyClose(std::unique_lock< decltype(mutex) >& lock) {
+            CloseCallback onClose = this->onClose;
+            if (onClose != nullptr) {
+                lock.unlock();
+                onClose();
+                lock.lock();
+            }
+        }
+
+        void OnClose(std::unique_lock< decltype(mutex) >& lock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            NotifyClose(lock);
+        }
+
+        void RegisterWebSocketCallbacks() {
+            std::weak_ptr< Impl > weakSelf(shared_from_this());
+            webSocket->RegisterCloseCallback(
+                [weakSelf]{
+                    const auto self = weakSelf.lock();
+                    if (self == nullptr) {
+                        return;
+                    }
+                    std::unique_lock< decltype(self->mutex) > lock(self->mutex);
+                    self->OnClose(lock);
+                }
+            );
+        }
+
+        void RegisterCloseCallback(
+            CloseCallback&& onClose,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            this->onClose = std::move(onClose);
+            if (closed) {
+                NotifyClose(lock);
+            }
         }
     };
 
@@ -138,6 +187,11 @@ namespace Discord {
                 return impl->Connect(connections, userAgent);
             }
         );
+    }
+
+    void Gateway::RegisterCloseCallback(CloseCallback&& onClose) {
+        std::unique_lock< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->RegisterCloseCallback(std::move(onClose), lock);
     }
 
     void Gateway::Disconnect() {
