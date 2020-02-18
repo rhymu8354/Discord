@@ -39,6 +39,9 @@ There are two distinct steps in the build process:
 * [CMake](https://cmake.org/) version 3.8 or newer
 * C++11 toolchain compatible with CMake for your development platform (e.g.
   [Visual Studio](https://www.visualstudio.com/) on Windows)
+* [Json](https://github.com/rhymu8354/Json.git) - a library which implements
+  [RFC 7159](https://tools.ietf.org/html/rfc7159), "The JavaScript Object
+  Notation (JSON) Data Interchange Format".
 
 ### Build system generation
 
