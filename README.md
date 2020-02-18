@@ -9,12 +9,13 @@ The `Discord::Gateway` class is used to interact with Discord gateways.
 
 ## Supported platforms / recommended toolchains
 
-This is a portable C++11 library which depends on the C++11 compiler and
-standard library.  It should be supported on almost any platform.  The
-following are recommended toolchains for popular platforms.
+This is a portable C++11 library which depends on the C++11 compiler, standard
+library, and the [Json](https://github.com/rhymu8354/Json.git) library.  It
+should be supported on almost any platform.  The following are recommended
+toolchains for popular platforms.
 
-The unit tests which accompany the library depend on the C++11 compiler,
-standard library, and the [Google
+The unit tests which accompany the library depend on the library and its
+dependencies, as well as the [Google
 Test](https://github.com/google/googletest.git) library.
 
 * Windows -- [Visual Studio](https://www.visualstudio.com/) (Microsoft Visual

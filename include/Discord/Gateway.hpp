@@ -8,6 +8,10 @@
  * © 2020 by Richard Walters
  */
 
+#include "Connections.hpp"
+#include "TimeKeeper.hpp"
+
+#include <future>
 #include <memory>
 
 namespace Discord {
@@ -31,6 +35,15 @@ namespace Discord {
          */
         Gateway();
 
+        void SetTimeKeeper(const std::shared_ptr< TimeKeeper >& timeKeeper);
+
+        std::future< bool > Connect(
+            const std::shared_ptr< Connections >& connections,
+            const std::string& userAgent
+        );
+
+        void Disconnect();
+
         // Private properties
     private:
         /**
@@ -43,7 +56,7 @@ namespace Discord {
         /**
          * This contains the private properties of the instance.
          */
-        std::unique_ptr< Impl > impl_;
+        std::shared_ptr< Impl > impl_;
     };
 
 }
