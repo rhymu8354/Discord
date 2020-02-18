@@ -22,6 +22,10 @@ namespace {
     struct MockWebSocket
         : public Discord::WebSocket
     {
+        // Properties
+
+        bool closed = false;
+
         // Methods
 
         // Discord::WebSocket
@@ -36,6 +40,7 @@ namespace {
         }
 
         virtual void Close() override {
+            closed = true;
         }
 
         virtual void Text(std::string&& message) override {
@@ -257,30 +262,36 @@ struct GatewayTests
         );
     }
 
-    void ConnectExpectingWebSocketEndpointRequestWithResponse(
+    bool ConnectExpectingWebSocketEndpointRequestWithResponse(
         const std::string& webSocketEndpointRequestResponse,
         std::future< bool >& connected
     ){
         const auto nextResourceRequest = connections->resourceRequests.size();
         connected = gateway.Connect(connections, "DiscordBot");
-        ASSERT_TRUE(connections->RequireResourceRequests(nextResourceRequest + 1)) << webSocketEndpointRequestResponse;
+        const auto resourceRequested = connections->RequireResourceRequests(nextResourceRequest + 1);
+        if (!resourceRequested) {
+            return false;
+        }
         connections->RespondToResourceRequest(nextResourceRequest, {
             200,
             {},
             webSocketEndpointRequestResponse
         });
+        return true;
     }
 
-    bool Connect(
-        const std::shared_ptr< Discord::WebSocket >& webSocket
-    ) {
+    bool Connect() {
         const auto nextWebSocketRequest = connections->webSocketRequests.size();
-        ConnectExpectingWebSocketEndpointRequestWithResponse(
+        const auto resourceRequested = ConnectExpectingWebSocketEndpointRequestWithResponse(
             Json::Object({
                 {"url", "wss://gateway.discord.gg"},
             }).ToEncoding(),
             connected
         );
+        EXPECT_TRUE(resourceRequested);
+        if (!resourceRequested) {
+            return false;
+        }
         const auto gotWebSocketRequest = connections->RequireWebSocketRequests(nextWebSocketRequest + 1);
         EXPECT_TRUE(gotWebSocketRequest);
         if (!gotWebSocketRequest) {
@@ -333,6 +344,18 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_Endpoint) {
     );
 }
 
+TEST_F(GatewayTests, Connect_Still_Connecting) {
+    // Arrange
+    const std::string userAgent = "DiscordBot";
+    connected = gateway.Connect(connections, userAgent);
+
+    // Act
+    auto secondConnectResult = gateway.Connect(connections, userAgent);
+
+    // Assert
+    EXPECT_FALSE(secondConnectResult.get());
+}
+
 TEST_F(GatewayTests, Connect_Fails_For_Non_OK_WebSocket_Endpoint_Response) {
     // Arrange
     std::future< bool > connected;
@@ -364,7 +387,9 @@ TEST_F(GatewayTests, Connect_Fails_For_Bad_WebSocket_Endpoint_Responses) {
     };
     std::vector< ConnectResultInfo > connectResults;
     for (const auto& responseBody: badWebSocketEndpointResponses) {
-        ConnectExpectingWebSocketEndpointRequestWithResponse(responseBody, connected);
+        ASSERT_TRUE(
+            ConnectExpectingWebSocketEndpointRequestWithResponse(responseBody, connected)
+        ) << responseBody;
         ConnectResultInfo connectResultsInfo;
         connectResultsInfo.responseBody = responseBody;
         connectResultsInfo.connectResult = connected.get();
@@ -382,7 +407,7 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_After_Receiving_WebSocket_
     const std::string webSocketEndpoint = "wss://gateway.discord.gg";
 
     // Act
-    ConnectExpectingWebSocketEndpointRequestWithResponse(
+    const auto webSocketEndpointRequested = ConnectExpectingWebSocketEndpointRequestWithResponse(
         Json::Object({
             {"url", webSocketEndpoint},
         }).ToEncoding(),
@@ -390,6 +415,7 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_After_Receiving_WebSocket_
     );
 
     // Assert
+    ASSERT_TRUE(webSocketEndpointRequested);
     ASSERT_TRUE(connections->RequireWebSocketRequests(1));
     auto& requestWithPromise = connections->webSocketRequests[0];
     EXPECT_EQ(
@@ -402,43 +428,161 @@ TEST_F(GatewayTests, Connect_Completes_Successfully_Once_WebSocket_Obtained) {
     // Arrange
 
     // Act
-    const auto connected = Connect(webSocket);
+    const auto connected = Connect();
 
     // Assert
     EXPECT_TRUE(connected);
 }
 
+TEST_F(GatewayTests, Connect_Already_Connected) {
+    // Arrange
+    (void)Connect();
+
+    // Act
+    connected = gateway.Connect(connections, "DiscordBot");
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    ASSERT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
+}
+
+TEST_F(GatewayTests, Disconnect) {
+    // Arrange
+    (void)Connect();
+
+    // Act
+    gateway.Disconnect();
+
+    // Assert
+    EXPECT_TRUE(webSocket->closed);
+}
+
 TEST_F(GatewayTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_First) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+
+    // Act
+    connected = gateway.Connect(connections, "DiscordBot");
+
+    // Assert
+    EXPECT_FALSE(connections->RequireResourceRequests(2));
 }
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+
+    // Act
+    connected = gateway.Connect(connections, "DiscordBot");
+
+    // Assert
+    EXPECT_TRUE(connections->RequireWebSocketRequests(2));
 }
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Open_Fails) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+    connected = gateway.Connect(connections, "DiscordBot");
+
+    // Act
+    ASSERT_TRUE(connections->RequireWebSocketRequests(2));
+    connections->RespondToWebSocketRequest(1, nullptr);
+    const auto resourceRequested = connections->RequireResourceRequests(2);
+
+    // Assert
+    EXPECT_TRUE(resourceRequested);
 }
 
-TEST_F(GatewayTests, Connect_Still_Connecting) {
-    // TODO
-    ASSERT_TRUE(false);
+TEST_F(GatewayTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+    connected = gateway.Connect(connections, "DiscordBot");
+
+    // Act
+    ASSERT_TRUE(connections->RequireWebSocketRequests(2));
+    connections->RespondToWebSocketRequest(1, nullptr);
+    ASSERT_TRUE(connections->RequireResourceRequests(2));
+    connections->RespondToResourceRequest(1, {
+        200,
+        {},
+        Json::Object({
+            {"url", "wss://gateway.discord.gg"},
+        }).ToEncoding(),
+    });
+    const auto secondWebSocketRequested = connections->RequireWebSocketRequests(3);
+
+    // Assert
+    EXPECT_TRUE(secondWebSocketRequested);
 }
 
-TEST_F(GatewayTests, Connect_Already_Connected) {
-    // TODO
-    ASSERT_TRUE(false);
+TEST_F(GatewayTests, Second_Connect_Succeeds_After_Second_WebSocket_Connected_When_First_WebSocket_Open_Fails) {
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+    connected = gateway.Connect(connections, "DiscordBot");
+
+    // Act
+    ASSERT_TRUE(connections->RequireWebSocketRequests(2));
+    connections->RespondToWebSocketRequest(1, nullptr);
+    ASSERT_TRUE(connections->RequireResourceRequests(2));
+    connections->RespondToResourceRequest(1, {
+        200,
+        {},
+        Json::Object({
+            {"url", "wss://gateway.discord.gg"},
+        }).ToEncoding(),
+    });
+    ASSERT_TRUE(connections->RequireWebSocketRequests(3));
+    connections->RespondToWebSocketRequest(2, webSocket);
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    EXPECT_TRUE(connectedReady);
+    EXPECT_TRUE(connected.get());
 }
 
-TEST_F(GatewayTests, Disconnect_When_Connected) {
-    // TODO
-    ASSERT_TRUE(false);
-}
+TEST_F(GatewayTests, Second_Connect_Fails_After_Failed_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
+    // Arrange
+    (void)Connect();
+    gateway.Disconnect();
+    connected = gateway.Connect(connections, "DiscordBot");
 
-TEST_F(GatewayTests, Disconnect_Not_Connected) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Act
+    ASSERT_TRUE(connections->RequireWebSocketRequests(2));
+    connections->RespondToWebSocketRequest(1, nullptr);
+    ASSERT_TRUE(connections->RequireResourceRequests(2));
+    connections->RespondToResourceRequest(1, {
+        200,
+        {},
+        Json::Object({
+            {"url", "wss://gateway.discord.gg"},
+        }).ToEncoding(),
+    });
+    ASSERT_TRUE(connections->RequireWebSocketRequests(3));
+    connections->RespondToWebSocketRequest(2, nullptr);
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    EXPECT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
 }

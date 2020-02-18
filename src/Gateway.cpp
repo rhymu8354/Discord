@@ -24,6 +24,7 @@ namespace Discord {
         bool connecting = false;
         std::mutex mutex;
         std::shared_ptr< WebSocket > webSocket;
+        std::string webSocketEndpoint;
 
         // Methods
 
@@ -63,15 +64,24 @@ namespace Discord {
             const std::string& userAgent,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            const auto url = GetGateway(connections, userAgent, lock);
-            if (url.empty()) {
+            if (!webSocketEndpoint.empty()) {
+                webSocket = Await(
+                    connections->QueueWebSocketRequest({webSocketEndpoint}),
+                    lock
+                );
+                if (webSocket != nullptr) {
+                    return true;
+                }
+            }
+            webSocketEndpoint = GetGateway(connections, userAgent, lock);
+            if (webSocketEndpoint.empty()) {
                 return false;
             }
-            const auto response = Await(
-                connections->QueueWebSocketRequest({url}),
+            webSocket = Await(
+                connections->QueueWebSocketRequest({webSocketEndpoint}),
                 lock
             );
-            if (response == nullptr) {
+            if (webSocket == nullptr) {
                 return false;
             }
             return true;
@@ -93,6 +103,14 @@ namespace Discord {
             );
             connecting = false;
             return connected;
+        }
+
+        void Disconnect() {
+            if (webSocket == nullptr) {
+                return;
+            }
+            webSocket->Close();
+            webSocket = nullptr;
         }
     };
 
@@ -123,6 +141,8 @@ namespace Discord {
     }
 
     void Gateway::Disconnect() {
+        std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->Disconnect();
     }
 
 }
