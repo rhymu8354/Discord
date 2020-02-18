@@ -436,7 +436,7 @@ TEST_F(GatewayTests, Connect_Completes_Successfully_Once_WebSocket_Obtained) {
 
 TEST_F(GatewayTests, Connect_Already_Connected) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
 
     // Act
     connected = gateway.Connect(connections, "DiscordBot");
@@ -454,7 +454,7 @@ TEST_F(GatewayTests, Connect_Already_Connected) {
 
 TEST_F(GatewayTests, Disconnect) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
 
     // Act
     gateway.Disconnect();
@@ -465,7 +465,7 @@ TEST_F(GatewayTests, Disconnect) {
 
 TEST_F(GatewayTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_First) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
 
     // Act
@@ -477,7 +477,7 @@ TEST_F(GatewayTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_First
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
 
     // Act
@@ -489,7 +489,7 @@ TEST_F(GatewayTests, Second_Connect_Requests_WebSocket) {
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Open_Fails) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
     connected = gateway.Connect(connections, "DiscordBot");
 
@@ -504,7 +504,7 @@ TEST_F(GatewayTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Ope
 
 TEST_F(GatewayTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
     connected = gateway.Connect(connections, "DiscordBot");
 
@@ -527,7 +527,7 @@ TEST_F(GatewayTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSocke
 
 TEST_F(GatewayTests, Second_Connect_Succeeds_After_Second_WebSocket_Connected_When_First_WebSocket_Open_Fails) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
     connected = gateway.Connect(connections, "DiscordBot");
 
@@ -558,7 +558,7 @@ TEST_F(GatewayTests, Second_Connect_Succeeds_After_Second_WebSocket_Connected_Wh
 
 TEST_F(GatewayTests, Second_Connect_Fails_After_Failed_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
     // Arrange
-    (void)Connect();
+    ASSERT_TRUE(Connect());
     gateway.Disconnect();
     connected = gateway.Connect(connections, "DiscordBot");
 
