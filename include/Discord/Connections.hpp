@@ -10,6 +10,7 @@
 
 #include "WebSocket.hpp"
 
+#include <functional>
 #include <future>
 #include <string>
 #include <utility>
@@ -24,6 +25,8 @@ namespace Discord {
     class Connections {
         // Types
     public:
+        using CancelDelegate = std::function< void() >;
+
         struct Header {
             std::string key;
             std::string value;
@@ -36,23 +39,33 @@ namespace Discord {
             std::string body;
         };
 
-        struct WebSocketRequest {
-            std::string uri;
-        };
-
         struct Response {
             unsigned int status;
             std::vector< Header > headers;
             std::string body;
         };
 
+        struct ResourceRequestTransaction {
+            std::future< Response > response;
+            CancelDelegate cancel;
+        };
+
+        struct WebSocketRequest {
+            std::string uri;
+        };
+
+        struct WebSocketRequestTransaction {
+            std::future< std::shared_ptr< WebSocket > > webSocket;
+            CancelDelegate cancel;
+        };
+
         // Methods
     public:
-        virtual std::future< Response > QueueResourceRequest(
+        virtual ResourceRequestTransaction QueueResourceRequest(
             const ResourceRequest& request
         ) = 0;
 
-        virtual std::future< std::shared_ptr< WebSocket > > QueueWebSocketRequest(
+        virtual WebSocketRequestTransaction QueueWebSocketRequest(
             const WebSocketRequest& request
         ) = 0;
     };
