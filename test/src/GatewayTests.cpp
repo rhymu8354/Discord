@@ -305,11 +305,11 @@ struct GatewayTests
         return true;
     }
 
-    bool Connect() {
+    bool Connect(const std::string webSocketEndpoint = "wss://gateway.discord.gg") {
         const auto nextWebSocketRequest = connections->webSocketRequests.size();
         const auto resourceRequested = ConnectExpectingWebSocketEndpointRequestWithResponse(
             Json::Object({
-                {"url", "wss://gateway.discord.gg"},
+                {"url", webSocketEndpoint},
             }).ToEncoding(),
             connected
         );
@@ -551,7 +551,8 @@ TEST_F(GatewayTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_First
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    const std::string webSocketEndpoint = "wss://gateway.discord.gg";
+    ASSERT_TRUE(Connect(webSocketEndpoint));
     gateway.Disconnect();
 
     // Act
@@ -559,13 +560,19 @@ TEST_F(GatewayTests, Second_Connect_Requests_WebSocket) {
 
     // Assert
     EXPECT_TRUE(connections->RequireWebSocketRequests(2));
+    auto& requestWithPromise = *connections->webSocketRequests[1];
+    EXPECT_EQ(
+        webSocketEndpoint + "/?v=6&encoding=json",
+        requestWithPromise.request.uri
+    );
 }
 
 TEST_F(GatewayTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Open_Fails) {
     // Arrange
+    const std::string userAgent = "DiscordBot";
     ASSERT_TRUE(Connect());
     gateway.Disconnect();
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, userAgent);
 
     // Act
     ASSERT_TRUE(connections->RequireWebSocketRequests(2));
@@ -574,6 +581,18 @@ TEST_F(GatewayTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Ope
 
     // Assert
     EXPECT_TRUE(resourceRequested);
+    auto& requestWithPromise = *connections->resourceRequests[1];
+    EXPECT_EQ("GET", requestWithPromise.request.method);
+    EXPECT_EQ(
+        "https://discordapp.com/api/v6/gateway",
+        requestWithPromise.request.uri
+    );
+    ExpectHeaders(
+        std::vector< Discord::Connections::Header >({
+            {"User-Agent", userAgent},
+        }),
+        requestWithPromise.request.headers
+    );
 }
 
 TEST_F(GatewayTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
