@@ -23,23 +23,56 @@ namespace Discord {
     {
         // Properties
 
+        bool cancelConnection = false;
+        Connections::CancelDelegate cancelCurrentOperation;
         bool closed = false;
         bool connecting = false;
         std::mutex mutex;
         CloseCallback onClose;
+        std::unique_ptr< std::future< void > > proceedWithConnect;
         std::shared_ptr< WebSocket > webSocket;
         std::string webSocketEndpoint;
 
         // Methods
 
-        template< typename T > T Await(
-            std::future< T >& asyncResult,
+        Connections::Response AwaitResourceRequest(
+            const std::shared_ptr< Connections >& connections,
+            Connections::ResourceRequest&& request,
             std::unique_lock< decltype(mutex) >& lock
         ) {
+            if (cancelConnection) {
+                return {499};
+            }
+            auto transaction = connections->QueueResourceRequest(request);
+            cancelCurrentOperation = transaction.cancel;
             lock.unlock();
-            const auto result = asyncResult.get();
+            auto response = transaction.response.get();
             lock.lock();
-            return result;
+            cancelCurrentOperation = nullptr;
+            if (cancelConnection) {
+                response.status = 499;
+            }
+            return response;
+        }
+
+        std::shared_ptr< WebSocket > AwaitWebSocketRequest(
+            const std::shared_ptr< Connections >& connections,
+            Connections::WebSocketRequest&& request,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            if (cancelConnection) {
+                return nullptr;
+            }
+            auto transaction = connections->QueueWebSocketRequest(request);
+            cancelCurrentOperation = transaction.cancel;
+            lock.unlock();
+            const auto webSocket = transaction.webSocket.get();
+            lock.lock();
+            cancelCurrentOperation = nullptr;
+            if (cancelConnection) {
+                return nullptr;
+            }
+            return webSocket;
         }
 
         std::string GetGateway(
@@ -47,14 +80,15 @@ namespace Discord {
             const std::string& userAgent,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            const auto response = Await(
-                connections->QueueResourceRequest({
+            const auto response = AwaitResourceRequest(
+                connections,
+                {
                     "GET",
                     "https://discordapp.com/api/v6/gateway",
                     {
                         {"User-Agent", userAgent},
                     },
-                }),
+                },
                 lock
             );
             if (response.status != 200) {
@@ -68,9 +102,18 @@ namespace Discord {
             const std::string& userAgent,
             std::unique_lock< decltype(mutex) >& lock
         ) {
+            if (proceedWithConnect != nullptr) {
+                decltype(proceedWithConnect) lastProceedWithConnect;
+                lastProceedWithConnect.swap(proceedWithConnect);
+                lock.unlock();
+                lastProceedWithConnect.get();
+                lock.lock();
+            }
+            static const std::string webSocketEndpointSuffix = "/?v=6&encoding=json";
             if (!webSocketEndpoint.empty()) {
-                webSocket = Await(
-                    connections->QueueWebSocketRequest({webSocketEndpoint}),
+                webSocket = AwaitWebSocketRequest(
+                    connections,
+                    {webSocketEndpoint + webSocketEndpointSuffix},
                     lock
                 );
             }
@@ -79,10 +122,9 @@ namespace Discord {
                 if (webSocketEndpoint.empty()) {
                     return false;
                 }
-                webSocket = Await(
-                    connections->QueueWebSocketRequest({
-                        webSocketEndpoint + "/?v=6&encoding=json"
-                    }),
+                webSocket = AwaitWebSocketRequest(
+                    connections,
+                    {webSocketEndpoint + webSocketEndpointSuffix},
                     lock
                 );
             }
@@ -94,16 +136,32 @@ namespace Discord {
             }
         }
 
-        bool Connect(
+        std::future< bool > Connect(
+            const std::shared_ptr< Connections >& connections,
+            const std::string& userAgent
+        ) {
+            if (webSocket || connecting) {
+                std::promise< bool > alreadyConnecting;
+                alreadyConnecting.set_value(false);
+                return alreadyConnecting.get_future();
+            }
+            closed = false;
+            connecting = true;
+            cancelConnection = false;
+            auto impl(shared_from_this());
+            return std::async(
+                std::launch::async,
+                [impl, connections, userAgent]{
+                    return impl->ConnectAsync(connections, userAgent);
+                }
+            );
+        }
+
+        bool ConnectAsync(
             const std::shared_ptr< Connections >& connections,
             const std::string& userAgent
         ) {
             std::unique_lock< decltype(mutex) > lock(mutex);
-            if (webSocket || connecting) {
-                return false;
-            }
-            closed = false;
-            connecting = true;
             const auto connected = CompleteConnect(
                 connections,
                 userAgent,
@@ -114,6 +172,10 @@ namespace Discord {
         }
 
         void Disconnect() {
+            cancelConnection = true;
+            if (cancelCurrentOperation != nullptr) {
+                cancelCurrentOperation();
+            }
             if (webSocket == nullptr) {
                 return;
             }
@@ -161,6 +223,12 @@ namespace Discord {
                 NotifyClose(lock);
             }
         }
+
+        void WaitBeforeConnect(std::future< void >&& proceedWithConnect) {
+            this->proceedWithConnect.reset(
+                new std::future< void >(std::move(proceedWithConnect))
+            );
+        }
     };
 
     Gateway::~Gateway() noexcept = default;
@@ -175,18 +243,17 @@ namespace Discord {
     void Gateway::SetTimeKeeper(const std::shared_ptr< TimeKeeper >& timeKeeper) {
     }
 
+    void Gateway::WaitBeforeConnect(std::future< void >&& proceedWithConnect) {
+        std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->WaitBeforeConnect(std::move(proceedWithConnect));
+    }
+
     std::future< bool > Gateway::Connect(
         const std::shared_ptr< Connections >& connections,
         const std::string& userAgent
     ) {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
-        auto impl(impl_);
-        return std::async(
-            std::launch::async,
-            [impl, connections, userAgent]{
-                return impl->Connect(connections, userAgent);
-            }
-        );
+        return impl_->Connect(connections, userAgent);
     }
 
     void Gateway::RegisterCloseCallback(CloseCallback&& onClose) {

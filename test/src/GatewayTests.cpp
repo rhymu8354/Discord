@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <Discord/Gateway.hpp>
+#include <future>
 #include <Json/Value.hpp>
 #include <memory>
 #include <mutex>
@@ -75,6 +76,7 @@ namespace {
         struct ResourceRequestWithPromise {
             ResourceRequest request;
             std::promise< Response > responsePromise;
+            std::promise< void > canceled;
             bool responded = false;
         };
 
@@ -86,6 +88,7 @@ namespace {
         struct WebSocketRequestWithPromise {
             WebSocketRequest request;
             std::promise< std::shared_ptr< Discord::WebSocket > > webSocketPromise;
+            std::promise< void > canceled;
             bool responded = false;
         };
 
@@ -93,9 +96,9 @@ namespace {
 
         std::mutex mutex;
         bool tornDown = false;
-        std::vector< ResourceRequestWithPromise > resourceRequests;
+        std::vector< std::shared_ptr< ResourceRequestWithPromise > > resourceRequests;
         ResourceRequestsWait resourceRequestsWait;
-        std::vector< WebSocketRequestWithPromise > webSocketRequests;
+        std::vector< std::shared_ptr< WebSocketRequestWithPromise > > webSocketRequests;
         WebSocketRequestsWait webSocketRequestsWait;
 
         // Methods
@@ -136,45 +139,52 @@ namespace {
             size_t requestIndex,
             Response&& response
         ) {
-            resourceRequests[requestIndex].responsePromise.set_value(std::move(response));
-            resourceRequests[requestIndex].responded = true;
+            resourceRequests[requestIndex]->responsePromise.set_value(std::move(response));
+            resourceRequests[requestIndex]->responded = true;
         }
 
         void RespondToWebSocketRequest(
             size_t requestIndex,
             std::shared_ptr< Discord::WebSocket > webSocket
         ) {
-            webSocketRequests[requestIndex].webSocketPromise.set_value(std::move(webSocket));
-            webSocketRequests[requestIndex].responded = true;
+            webSocketRequests[requestIndex]->webSocketPromise.set_value(std::move(webSocket));
+            webSocketRequests[requestIndex]->responded = true;
         }
 
         void TearDown() {
             std::lock_guard< decltype(mutex) > lock(mutex);
             tornDown = true;
             for (auto& request: resourceRequests) {
-                if (!request.responded) {
-                    request.responsePromise.set_value({500});
+                if (!request->responded) {
+                    request->responsePromise.set_value({500});
                 }
             }
             for (auto& request: webSocketRequests) {
-                if (!request.responded) {
-                    request.webSocketPromise.set_value(nullptr);
+                if (!request->responded) {
+                    request->webSocketPromise.set_value(nullptr);
                 }
             }
         }
 
         // Discord::Connections
 
-        virtual std::future< Response > QueueResourceRequest(
+        virtual ResourceRequestTransaction QueueResourceRequest(
             const ResourceRequest& request
         ) override {
             std::lock_guard< decltype(mutex) > lock(mutex);
-            ResourceRequestWithPromise requestWithPromise;
-            requestWithPromise.request = request;
-            auto future = requestWithPromise.responsePromise.get_future();
+            auto requestWithPromise = std::make_shared< ResourceRequestWithPromise >();
+            requestWithPromise->request = request;
+            ResourceRequestTransaction transaction;
+            transaction.response = requestWithPromise->responsePromise.get_future();
             if (tornDown) {
-                requestWithPromise.responsePromise.set_value({500});
+                requestWithPromise->responsePromise.set_value({500});
+                transaction.cancel = []{};
             } else {
+                transaction.cancel = [requestWithPromise]{
+                    requestWithPromise->responsePromise.set_value({499});
+                    requestWithPromise->responded = true;
+                    requestWithPromise->canceled.set_value();
+                };
                 resourceRequests.push_back(std::move(requestWithPromise));
                 if (
                     (resourceRequestsWait.numRequests > 0)
@@ -183,19 +193,26 @@ namespace {
                     resourceRequestsWait.haveRequiredRequests.set_value();
                 }
             }
-            return future;
+            return transaction;
         }
 
-        virtual std::future< std::shared_ptr< Discord::WebSocket > > QueueWebSocketRequest(
+        virtual WebSocketRequestTransaction QueueWebSocketRequest(
             const WebSocketRequest& request
         ) override {
             std::lock_guard< decltype(mutex) > lock(mutex);
-            WebSocketRequestWithPromise requestWithPromise;
-            requestWithPromise.request = request;
-            auto future = requestWithPromise.webSocketPromise.get_future();
+            auto requestWithPromise = std::make_shared< WebSocketRequestWithPromise >();
+            requestWithPromise->request = request;
+            WebSocketRequestTransaction transaction;
+            transaction.webSocket = requestWithPromise->webSocketPromise.get_future();
             if (tornDown) {
-                requestWithPromise.webSocketPromise.set_value(nullptr);
+                requestWithPromise->webSocketPromise.set_value(nullptr);
+                transaction.cancel = []{};
             } else {
+                transaction.cancel = [requestWithPromise]{
+                    requestWithPromise->webSocketPromise.set_value(nullptr);
+                    requestWithPromise->responded = true;
+                    requestWithPromise->canceled.set_value();
+                };
                 webSocketRequests.push_back(std::move(requestWithPromise));
                 if (
                     (webSocketRequestsWait.numRequests > 0)
@@ -204,7 +221,7 @@ namespace {
                     webSocketRequestsWait.haveRequiredRequests.set_value();
                 }
             }
-            return future;
+            return transaction;
         }
     };
 
@@ -338,7 +355,7 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_Endpoint) {
 
     // Assert
     ASSERT_TRUE(connections->RequireResourceRequests(1));
-    auto& requestWithPromise = connections->resourceRequests[0];
+    auto& requestWithPromise = *connections->resourceRequests[0];
     EXPECT_EQ("GET", requestWithPromise.request.method);
     EXPECT_EQ(
         "https://discordapp.com/api/v6/gateway",
@@ -410,6 +427,55 @@ TEST_F(GatewayTests, Connect_Fails_For_Bad_WebSocket_Endpoint_Responses) {
     }
 }
 
+TEST_F(GatewayTests, Connect_Fails_When_Disconnect_During_WebSocket_Endpoint_Request) {
+    // Arrange
+    const std::string userAgent = "DiscordBot";
+    connected = gateway.Connect(connections, userAgent);
+
+    // Act
+    ASSERT_TRUE(connections->RequireResourceRequests(1));
+    gateway.Disconnect();
+    ASSERT_EQ(
+        std::future_status::ready,
+        connections->resourceRequests[0]->canceled.get_future().wait_for(
+            std::chrono::milliseconds(100)
+        )
+    );
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    ASSERT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
+}
+
+TEST_F(GatewayTests, Connect_Fails_When_Disconnect_Before_WebSocket_Endpoint_Request) {
+    // Arrange
+    const std::string userAgent = "DiscordBot";
+    std::promise< void > proceedWithConnect;
+    gateway.WaitBeforeConnect(proceedWithConnect.get_future());
+    connected = gateway.Connect(connections, userAgent);
+
+    // Act
+    gateway.Disconnect();
+    proceedWithConnect.set_value();
+    EXPECT_FALSE(connections->RequireResourceRequests(1));
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    ASSERT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
+}
+
 TEST_F(GatewayTests, First_Connect_Requests_WebSocket_After_Receiving_WebSocket_Endpoint) {
     // Arrange
     const std::string webSocketEndpoint = "wss://gateway.discord.gg";
@@ -425,7 +491,7 @@ TEST_F(GatewayTests, First_Connect_Requests_WebSocket_After_Receiving_WebSocket_
     // Assert
     ASSERT_TRUE(webSocketEndpointRequested);
     ASSERT_TRUE(connections->RequireWebSocketRequests(1));
-    auto& requestWithPromise = connections->webSocketRequests[0];
+    auto& requestWithPromise = *connections->webSocketRequests[0];
     EXPECT_EQ(
         webSocketEndpoint + "/?v=6&encoding=json",
         requestWithPromise.request.uri

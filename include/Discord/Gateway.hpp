@@ -42,6 +42,8 @@ namespace Discord {
 
         void SetTimeKeeper(const std::shared_ptr< TimeKeeper >& timeKeeper);
 
+        void WaitBeforeConnect(std::future< void >&& proceedWithConnect);
+
         std::future< bool > Connect(
             const std::shared_ptr< Connections >& connections,
             const std::string& userAgent
