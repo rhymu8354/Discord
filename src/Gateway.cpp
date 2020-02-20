@@ -12,6 +12,8 @@
 #include <Json/Value.hpp>
 #include <memory>
 #include <mutex>
+#include <StringExtensions/StringExtensions.hpp>
+#include <unordered_map>
 #include <vector>
 
 namespace Discord {
@@ -22,17 +24,31 @@ namespace Discord {
     struct Gateway::Impl
         : public std::enable_shared_from_this< Impl >
     {
+        // Types
+
+        struct DiagnosticMessage {
+            size_t level = 0;
+            std::string message;
+        };
+        using MessageHandler = void (Impl::*)(
+            Json::Value&& message,
+            std::unique_lock< std::recursive_mutex >& lock
+        );
+
         // Properties
 
         bool cancelConnection = false;
         Connections::CancelDelegate cancelCurrentOperation;
         bool closed = false;
         bool connecting = false;
+        double heartbeatInterval = 0.0;
         std::recursive_mutex mutex;
         CloseCallback onClose;
-        TextCallback onText;
+        DiagnosticCallback onDiagnosticMessage;
         std::unique_ptr< std::future< void > > proceedWithConnect;
-        std::vector< std::string > storedData;
+        int lastSequenceNumber = 0;
+        bool receivedSequenceNumber = false;
+        std::vector< DiagnosticMessage > storedDiagnosticMessages;
         std::shared_ptr< WebSocket > webSocket;
         std::string webSocketEndpoint;
 
@@ -150,6 +166,11 @@ namespace Discord {
 
             // Set up to receive close events as well as text and binary
             // messages from the gateway.
+            NotifyDiagnosticMessage(
+                0,
+                "Connected to Discord",
+                lock
+            );
             RegisterWebSocketCallbacks();
             return true;
         }
@@ -210,6 +231,28 @@ namespace Discord {
             }
         }
 
+        void NotifyDiagnosticMessage(
+            size_t level,
+            std::string&& message,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            decltype(onDiagnosticMessage) onDiagnosticMessageSample(onDiagnosticMessage);
+            lock.unlock();
+            if (onDiagnosticMessageSample == nullptr) {
+                lock.lock();
+                DiagnosticMessage messageInfo;
+                messageInfo.level = level;
+                messageInfo.message = std::move(message);
+                storedDiagnosticMessages.push_back(std::move(messageInfo));
+            } else {
+                onDiagnosticMessageSample(
+                    level,
+                    std::move(message)
+                );
+                lock.lock();
+            }
+        }
+
         void OnClose(std::unique_lock< decltype(mutex) >& lock) {
             if (closed) {
                 return;
@@ -218,18 +261,94 @@ namespace Discord {
             NotifyClose(lock);
         }
 
+        void OnHeartbeat(
+            Json::Value&& message,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            NotifyDiagnosticMessage(
+                0,
+                "Received heartbeat",
+                lock
+            );
+            webSocket->Text(
+                Json::Object({
+                    {"op", 1},
+                    {"d", (
+                        receivedSequenceNumber
+                        ? Json::Value(lastSequenceNumber)
+                        : Json::Value(nullptr)
+                    )},
+                }).ToEncoding()
+            );
+        }
+
+        void OnHello(
+            Json::Value&& message,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            // Discord tells us the interval in milliseconds.
+            // We store it as a floating-point number of seconds.
+            heartbeatInterval = (
+                (double)message["d"]["heartbeat_interval"]
+                / 1000.0
+            );
+            NotifyDiagnosticMessage(
+                0,
+                StringExtensions::sprintf(
+                    "Heartbeat interval is %lg seconds",
+                    heartbeatInterval
+                ),
+                lock
+            );
+        }
+
         void OnText(
             std::string&& message,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            decltype(onText) onTextSample(onText);
-            lock.unlock();
-            if (onTextSample == nullptr) {
-                lock.lock();
-                storedData.push_back(std::move(message));
+            // Interpret message JSON
+            auto messageJson = Json::Value::FromEncoding(message);
+            if (messageJson.GetType() != Json::Value::Type::Object) {
+                NotifyDiagnosticMessage(
+                    10,
+                    StringExtensions::sprintf(
+                        "Invalid text received: \"%s\"",
+                        message.c_str()
+                    ),
+                    lock
+                );
+                return;
+            }
+
+            // Report the raw message via the diagnostic message hook.
+            NotifyDiagnosticMessage(
+                0,
+                StringExtensions::sprintf(
+                    "Received text: \"%s\"",
+                    message.c_str()
+                ),
+                lock
+            );
+
+            // Dispatch based on opcode.
+            static const std::unordered_map< int, MessageHandler > messageHandlersByOpcode = {
+                {1, &Impl::OnHeartbeat},
+                {10, &Impl::OnHello},
+            };
+            const int opcode = messageJson["op"];
+            const auto messageHandlersByOpcodeEntry = messageHandlersByOpcode.find(opcode);
+            if (messageHandlersByOpcodeEntry == messageHandlersByOpcode.end()) {
+                NotifyDiagnosticMessage(
+                    5,
+                    StringExtensions::sprintf(
+                        "Received message with unknown opcode %d",
+                        opcode
+                    ),
+                    lock
+                );
             } else {
-                onTextSample(message);
-                lock.lock();
+                const auto messageHandler = messageHandlersByOpcodeEntry->second;
+                (this->*messageHandler)(std::move(messageJson), lock);
             }
         }
 
@@ -267,21 +386,24 @@ namespace Discord {
             }
         }
 
-        void RegisterTextCallback(
-            TextCallback&& onText,
+        void RegisterDiagnosticMessageCallback(
+            DiagnosticCallback&& onDiagnosticMessage,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            this->onText = std::move(onText);
+            this->onDiagnosticMessage = onDiagnosticMessage;
             if (
-                !storedData.empty()
-                && (this->onText != nullptr)
+                !storedDiagnosticMessages.empty()
+                && (this->onDiagnosticMessage != nullptr)
             ) {
-                decltype(this->storedData) storedData;
-                storedData.swap(this->storedData);
-                decltype(this->onText) onTextSample(this->onText);
+                decltype(this->storedDiagnosticMessages) storedDiagnosticMessages;
+                storedDiagnosticMessages.swap(this->storedDiagnosticMessages);
+                decltype(this->onDiagnosticMessage) onDiagnosticMessageSample(this->onDiagnosticMessage);
                 lock.unlock();
-                for (auto& message: storedData) {
-                    onTextSample(message);
+                for (auto& messageInfo: storedDiagnosticMessages) {
+                    onDiagnosticMessageSample(
+                        messageInfo.level,
+                        std::move(messageInfo.message)
+                    );
                 }
                 lock.lock();
             }
@@ -324,9 +446,9 @@ namespace Discord {
         impl_->RegisterCloseCallback(std::move(onClose), lock);
     }
 
-    void Gateway::RegisterTextCallback(TextCallback&& onText) {
+    void Gateway::RegisterDiagnosticMessageCallback(DiagnosticCallback&& onDiagnosticMessage) {
         std::unique_lock< decltype(impl_->mutex) > lock(impl_->mutex);
-        impl_->RegisterTextCallback(std::move(onText), lock);
+        impl_->RegisterDiagnosticMessageCallback(std::move(onDiagnosticMessage), lock);
     }
 
     void Gateway::Disconnect() {

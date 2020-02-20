@@ -24,7 +24,12 @@ namespace Discord {
         // Types
     public:
         using CloseCallback = std::function< void() >;
-        using TextCallback = std::function< void(const std::string&) >;
+        using DiagnosticCallback = std::function<
+            void(
+                size_t level,
+                std::string&& message
+            )
+        >;
 
         // Lifecycle management
     public:
@@ -52,7 +57,7 @@ namespace Discord {
 
         void RegisterCloseCallback(CloseCallback&& onClose);
 
-        void RegisterTextCallback(TextCallback&& onText);
+        void RegisterDiagnosticMessageCallback(DiagnosticCallback&& onDiagnosticMessage);
 
         void Disconnect();
 
