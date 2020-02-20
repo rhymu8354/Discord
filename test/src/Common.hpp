@@ -28,12 +28,16 @@ struct MockWebSocket
     // Properties
 
     bool closed = false;
+    std::mutex mutex;
     CloseCallback onClose;
     ReceiveCallback onText;
     std::vector< std::string > textSent;
+    size_t numTextsSentAwaiting = 0;
+    std::shared_ptr< std::promise< void > > allTextsSent;
 
     // Methods
 
+    bool AwaitTexts(size_t numTexts);
     void RemoteClose();
 
     // Discord::WebSocket
@@ -147,20 +151,23 @@ struct CommonTextFixture
     std::future< bool > connected;
 
     std::shared_ptr< MockConnections > connections = std::make_shared< MockConnections >();
+    int heartbeatIntervalMilliseconds = 45000;
     Discord::Gateway gateway;
+    std::shared_ptr< MockTimeKeeper > timeKeeper = std::make_shared< MockTimeKeeper >();
     std::shared_ptr< MockWebSocket > webSocket = std::make_shared< MockWebSocket >();
 
     // Methods
 
-    void ExpectHeaders(
-        const std::vector< Discord::Connections::Header >& expected,
-        const std::vector< Discord::Connections::Header >& actual
-    );
     bool ConnectExpectingWebSocketEndpointRequestWithResponse(
         const std::string& webSocketEndpointRequestResponse,
         std::future< bool >& connected
     );
     bool Connect(const std::string webSocketEndpoint = "wss://gateway.discord.gg");
+    void ExpectHeaders(
+        const std::vector< Discord::Connections::Header >& expected,
+        const std::vector< Discord::Connections::Header >& actual
+    );
+    void SendHello();
 
     // ::testing::Test
 

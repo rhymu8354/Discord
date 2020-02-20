@@ -29,14 +29,7 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Hello_Received) {
     ASSERT_FALSE(webSocket->onText == nullptr);
 
     // Act
-    webSocket->onText(
-        Json::Object({
-            {"op", 10},
-            {"d", Json::Object({
-                {"heartbeat_interval", 45000},
-            })},
-        }).ToEncoding()
-    );
+    SendHello();
 
     // Assert
     EXPECT_EQ(
@@ -62,6 +55,29 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Received) {
             {"d", nullptr},
         }).ToEncoding()
     );
+
+    // Assert
+    EXPECT_EQ(
+        std::vector< std::string >({
+            Json::Object({
+                {"op", 1},
+                {"d", nullptr},
+            }).ToEncoding(),
+        }),
+        webSocket->textSent
+    );
+}
+
+TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
+    // Arrange
+    ASSERT_TRUE(Connect());
+    ASSERT_FALSE(webSocket->onText == nullptr);
+
+    // Act
+    SendHello();
+    webSocket->textSent.clear();
+    timeKeeper->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
+    EXPECT_TRUE(webSocket->AwaitTexts(1));
 
     // Assert
     EXPECT_EQ(

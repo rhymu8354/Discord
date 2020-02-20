@@ -14,6 +14,22 @@
 #include <memory>
 #include <unordered_map>
 
+bool MockWebSocket::AwaitTexts(size_t numTexts) {
+    std::unique_lock< decltype(mutex) > lock(mutex);
+    if (textSent.size() >= numTexts) {
+        return true;
+    }
+    numTextsSentAwaiting = numTexts;
+    allTextsSent = std::make_shared< std::promise< void > >();
+    lock.unlock();
+    return (
+        allTextsSent->get_future().wait_for(
+            std::chrono::milliseconds(200)
+        )
+        == std::future_status::ready
+    );
+}
+
 void MockWebSocket::RemoteClose() {
     if (onClose != nullptr) {
         onClose();
@@ -28,7 +44,15 @@ void MockWebSocket::Close() {
 }
 
 void MockWebSocket::Text(std::string&& message) {
+    std::lock_guard< decltype(mutex) > lock(mutex);
     textSent.push_back(std::move(message));
+    if (
+        (allTextsSent != nullptr)
+        && (textSent.size() == numTextsSentAwaiting)
+    ) {
+        allTextsSent->set_value();
+        allTextsSent = nullptr;
+    }
 }
 
 void MockWebSocket::RegisterBinaryCallback(ReceiveCallback&& onBinary) {
@@ -165,28 +189,6 @@ double MockTimeKeeper::GetCurrentTime() {
     return currentTime;
 }
 
-void CommonTextFixture::ExpectHeaders(
-    const std::vector< Discord::Connections::Header >& expected,
-    const std::vector< Discord::Connections::Header >& actual
-) {
-    std::unordered_map< std::string, std::string > notFound;
-    for (const auto& header: expected) {
-        notFound[header.key] = header.value;
-    }
-    for (const auto& header: actual) {
-        const auto notFoundEntry = notFound.find(header.key);
-        EXPECT_FALSE(notFoundEntry == notFound.end()) << header.key;
-        if (notFoundEntry != notFound.end()) {
-            EXPECT_EQ(notFoundEntry->second, header.value) << header.key;
-            (void)notFound.erase(notFoundEntry);
-        }
-    }
-    EXPECT_EQ(
-        (std::unordered_map< std::string, std::string >({})),
-        notFound
-    );
-}
-
 bool CommonTextFixture::ConnectExpectingWebSocketEndpointRequestWithResponse(
     const std::string& webSocketEndpointRequestResponse,
     std::future< bool >& connected
@@ -236,8 +238,42 @@ bool CommonTextFixture::Connect(const std::string webSocketEndpoint) {
     return connected.get();
 }
 
+void CommonTextFixture::ExpectHeaders(
+    const std::vector< Discord::Connections::Header >& expected,
+    const std::vector< Discord::Connections::Header >& actual
+) {
+    std::unordered_map< std::string, std::string > notFound;
+    for (const auto& header: expected) {
+        notFound[header.key] = header.value;
+    }
+    for (const auto& header: actual) {
+        const auto notFoundEntry = notFound.find(header.key);
+        EXPECT_FALSE(notFoundEntry == notFound.end()) << header.key;
+        if (notFoundEntry != notFound.end()) {
+            EXPECT_EQ(notFoundEntry->second, header.value) << header.key;
+            (void)notFound.erase(notFoundEntry);
+        }
+    }
+    EXPECT_EQ(
+        (std::unordered_map< std::string, std::string >({})),
+        notFound
+    );
+}
+
+void CommonTextFixture::SendHello() {
+    webSocket->onText(
+        Json::Object({
+            {"op", 10},
+            {"d", Json::Object({
+                {"heartbeat_interval", heartbeatIntervalMilliseconds},
+            })},
+        }).ToEncoding()
+    );
+}
+
 void CommonTextFixture::SetUp() {
     ::testing::Test::SetUp();
+    gateway.SetTimeKeeper(timeKeeper);
 }
 
 void CommonTextFixture::TearDown() {
