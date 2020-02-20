@@ -59,6 +59,24 @@ TEST_F(ConnectionTests, Connect_Still_Connecting) {
     EXPECT_FALSE(secondConnectResult.get());
 }
 
+TEST_F(ConnectionTests, Connect_Fails_If_No_Scheduler_Set) {
+    // Arrange
+    gateway = Discord::Gateway();
+
+    // Act
+    connected = gateway.Connect(connections, "DiscordBot");
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    ASSERT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
+}
+
 TEST_F(ConnectionTests, Connect_Fails_For_Non_OK_WebSocket_Endpoint_Response) {
     // Arrange
     std::future< bool > connected;

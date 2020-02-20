@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <Timekeeping/Clock.hpp>
 #include <vector>
 
 /**
@@ -121,10 +122,10 @@ struct MockConnections
 };
 
 /**
- * This is a fake time-keeper which is used to test the Gateway class.
+ * This is a fake clock which is used to test the Gateway class.
  */
-struct MockTimeKeeper
-    : public Discord::TimeKeeper
+struct MockClock
+    : public Timekeeping::Clock
 {
     // Properties
 
@@ -132,7 +133,7 @@ struct MockTimeKeeper
 
     // Methods
 
-    // Discord::TimeKeeper
+    // Timekeeping::Clock
 
     virtual double GetCurrentTime() override;
 };
@@ -153,7 +154,8 @@ struct CommonTextFixture
     std::shared_ptr< MockConnections > connections = std::make_shared< MockConnections >();
     int heartbeatIntervalMilliseconds = 45000;
     Discord::Gateway gateway;
-    std::shared_ptr< MockTimeKeeper > timeKeeper = std::make_shared< MockTimeKeeper >();
+    std::shared_ptr< MockClock > clock = std::make_shared< MockClock >();
+    std::shared_ptr< Timekeeping::Scheduler > scheduler = std::make_shared< Timekeeping::Scheduler >();
     std::shared_ptr< MockWebSocket > webSocket = std::make_shared< MockWebSocket >();
 
     // Methods

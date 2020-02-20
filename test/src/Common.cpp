@@ -188,7 +188,7 @@ auto MockConnections::QueueWebSocketRequest(
     return transaction;
 }
 
-double MockTimeKeeper::GetCurrentTime() {
+double MockClock::GetCurrentTime() {
     return currentTime;
 }
 
@@ -276,7 +276,8 @@ void CommonTextFixture::SendHello() {
 
 void CommonTextFixture::SetUp() {
     ::testing::Test::SetUp();
-    gateway.SetTimeKeeper(timeKeeper);
+    scheduler->SetClock(clock);
+    gateway.SetScheduler(scheduler);
 }
 
 void CommonTextFixture::TearDown() {

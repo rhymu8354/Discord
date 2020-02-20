@@ -8,7 +8,6 @@ set(This Discord)
 set(Headers
     include/Discord/Connections.hpp
     include/Discord/Gateway.hpp
-    include/Discord/TimeKeeper.hpp
     include/Discord/WebSocket.hpp
 )
 
@@ -26,6 +25,7 @@ target_include_directories(${This} PUBLIC include)
 target_link_libraries(${This} PUBLIC
     Json
     StringExtensions
+    Timekeeping
 )
 
 add_subdirectory(test)

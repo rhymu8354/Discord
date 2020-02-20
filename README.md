@@ -45,6 +45,8 @@ There are two distinct steps in the build process:
 * [StringExtensions](https://github.com/rhymu8354/StringExtensions.git) - a
   library containing C++ string-oriented libraries, many of which ought to be
   in the standard library, but aren't.
+* [Timekeeping](https://github.com/rhymu8354/Timekeeping.git) - a library
+  of classes and interfaces dealing with tracking time and scheduling work
 
 ### Build system generation
 

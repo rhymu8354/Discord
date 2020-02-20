@@ -68,6 +68,21 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Received) {
     );
 }
 
+TEST_F(HeartbeatTests, Heartbeat_Not_Sent_Before_Heartbeat_Interval) {
+    // Arrange
+    ASSERT_TRUE(Connect());
+    ASSERT_FALSE(webSocket->onText == nullptr);
+
+    // Act
+    SendHello();
+    webSocket->textSent.clear();
+    clock->currentTime += (double)(heartbeatIntervalMilliseconds - 1) / 1000.0;
+    scheduler->WakeUp();
+
+    // Assert
+    EXPECT_FALSE(webSocket->AwaitTexts(1));
+}
+
 TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
     // Arrange
     ASSERT_TRUE(Connect());
@@ -76,7 +91,8 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
     // Act
     SendHello();
     webSocket->textSent.clear();
-    timeKeeper->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
+    clock->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
+    scheduler->WakeUp();
     EXPECT_TRUE(webSocket->AwaitTexts(1));
 
     // Assert

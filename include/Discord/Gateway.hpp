@@ -9,11 +9,11 @@
  */
 
 #include "Connections.hpp"
-#include "TimeKeeper.hpp"
 
 #include <functional>
 #include <future>
 #include <memory>
+#include <Timekeeping/Scheduler.hpp>
 
 namespace Discord {
 
@@ -46,7 +46,7 @@ namespace Discord {
          */
         Gateway();
 
-        void SetTimeKeeper(const std::shared_ptr< TimeKeeper >& timeKeeper);
+        void SetScheduler(const std::shared_ptr< Timekeeping::Scheduler >& scheduler);
 
         void WaitBeforeConnect(std::future< void >&& proceedWithConnect);
 

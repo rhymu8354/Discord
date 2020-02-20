@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <StringExtensions/StringExtensions.hpp>
+#include <Timekeeping/Scheduler.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -43,12 +44,15 @@ namespace Discord {
         std::promise< void > closePromise;
         bool connecting = false;
         double heartbeatInterval = 0.0;
+        int heartbeatSchedulerToken = 0;
         std::recursive_mutex mutex;
         CloseCallback onClose;
         DiagnosticCallback onDiagnosticMessage;
         std::unique_ptr< std::future< void > > proceedWithConnect;
         int lastSequenceNumber = 0;
+        double nextHeartbeatTime = 0.0;
         bool receivedSequenceNumber = false;
+        std::shared_ptr< Timekeeping::Scheduler > scheduler;
         std::vector< DiagnosticMessage > storedDiagnosticMessages;
         std::shared_ptr< WebSocket > webSocket;
         std::string webSocketEndpoint;
@@ -180,7 +184,13 @@ namespace Discord {
             const std::shared_ptr< Connections >& connections,
             const std::string& userAgent
         ) {
-            if (webSocket || connecting) {
+            // Fail if no scheduler is set, or if we have a WebSocket or are in
+            // the process of connecting.
+            if (
+                (scheduler == nullptr)
+                || webSocket
+                || connecting
+            ) {
                 std::promise< bool > alreadyConnecting;
                 alreadyConnecting.set_value(false);
                 return alreadyConnecting.get_future();
@@ -236,7 +246,9 @@ namespace Discord {
                     lock
                 );
             }
+            UnscheduleAll();
             webSocket = nullptr;
+            heartbeatInterval = 0.0;
         }
 
         void NotifyClose(std::unique_lock< decltype(mutex) >& lock) {
@@ -293,16 +305,12 @@ namespace Discord {
                 "Received heartbeat",
                 lock
             );
-            webSocket->Text(
-                Json::Object({
-                    {"op", 1},
-                    {"d", (
-                        receivedSequenceNumber
-                        ? Json::Value(lastSequenceNumber)
-                        : Json::Value(nullptr)
-                    )},
-                }).ToEncoding()
-            );
+            SendHeartbeat(lock);
+        }
+
+        void OnHeartbeatDue(std::unique_lock< decltype(mutex) >& lock) {
+            heartbeatSchedulerToken = 0;
+            SendHeartbeat(lock);
         }
 
         void OnHello(
@@ -325,7 +333,7 @@ namespace Discord {
             );
 
             // Begin sending regular heartbeats.
-            SendHeartbeat();
+            SendHeartbeat(lock);
         }
 
         void OnText(
@@ -435,7 +443,48 @@ namespace Discord {
             }
         }
 
-        void SendHeartbeat() {
+        void ScheduleAll() {
+            ScheduleHeartbeat();
+        }
+
+        void ScheduleHeartbeat() {
+            if (
+                (scheduler == nullptr)
+                || (webSocket == nullptr)
+                || closed
+                || (heartbeatSchedulerToken != 0)
+            ) {
+                return;
+            }
+            std::weak_ptr< Impl > weakSelf(shared_from_this());
+            heartbeatSchedulerToken = scheduler->Schedule(
+                [weakSelf]{
+                    const auto self = weakSelf.lock();
+                    if (self == nullptr) {
+                        return;
+                    }
+                    std::unique_lock< decltype(self->mutex) > lock(self->mutex);
+                    self->OnHeartbeatDue(lock);
+                },
+                nextHeartbeatTime
+            );
+        }
+
+        void SendHeartbeat(std::unique_lock< decltype(mutex) >& lock) {
+            // Cancel any currently-scheduled heartbeat.
+            UnscheduleHeartbeat();
+
+            // Don't send a heartbeat if we have no WebSocket
+            // or if it's closed.
+            if (
+                (webSocket == nullptr)
+                || closed
+            ) {
+                return;
+            }
+
+            // Send a heartbeat to the gateway.
+            NotifyDiagnosticMessage(0, "Sending heartbeat", lock);
             webSocket->Text(
                 Json::Object({
                     {"op", 1},
@@ -446,6 +495,31 @@ namespace Discord {
                     )},
                 }).ToEncoding()
             );
+
+            // If a heartbeat interval is set, schedule the next heartbeat.
+            if (heartbeatInterval != 0.0) {
+                nextHeartbeatTime += heartbeatInterval;
+                const auto now = scheduler->GetClock()->GetCurrentTime();
+                if (nextHeartbeatTime <= now) {
+                    nextHeartbeatTime = now + heartbeatInterval;
+                }
+                ScheduleHeartbeat();
+            }
+        }
+
+        void UnscheduleAll() {
+            UnscheduleHeartbeat();
+        }
+
+        void UnscheduleHeartbeat() {
+            if (
+                (scheduler == nullptr)
+                || (heartbeatSchedulerToken == 0)
+            ) {
+                return;
+            }
+            scheduler->Cancel(heartbeatSchedulerToken);
+            heartbeatSchedulerToken = 0;
         }
 
         void WaitBeforeConnect(std::future< void >&& proceedWithConnect) {
@@ -464,7 +538,11 @@ namespace Discord {
     {
     }
 
-    void Gateway::SetTimeKeeper(const std::shared_ptr< TimeKeeper >& timeKeeper) {
+    void Gateway::SetScheduler(const std::shared_ptr< Timekeeping::Scheduler >& scheduler) {
+        std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->UnscheduleAll();
+        impl_->scheduler = scheduler;
+        impl_->ScheduleAll();
     }
 
     void Gateway::WaitBeforeConnect(std::future< void >&& proceedWithConnect) {
