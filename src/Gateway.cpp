@@ -40,6 +40,7 @@ namespace Discord {
         bool cancelConnection = false;
         Connections::CancelDelegate cancelCurrentOperation;
         bool closed = false;
+        std::promise< void > closePromise;
         bool connecting = false;
         double heartbeatInterval = 0.0;
         std::recursive_mutex mutex;
@@ -167,7 +168,7 @@ namespace Discord {
             // Set up to receive close events as well as text and binary
             // messages from the gateway.
             NotifyDiagnosticMessage(
-                0,
+                1,
                 "Connected to Discord",
                 lock
             );
@@ -185,6 +186,7 @@ namespace Discord {
                 return alreadyConnecting.get_future();
             }
             closed = false;
+            closePromise = std::promise< void >();
             connecting = true;
             cancelConnection = false;
             auto impl(shared_from_this());
@@ -210,7 +212,7 @@ namespace Discord {
             return connected;
         }
 
-        void Disconnect() {
+        void Disconnect(std::unique_lock< decltype(mutex) >& lock) {
             cancelConnection = true;
             if (cancelCurrentOperation != nullptr) {
                 cancelCurrentOperation();
@@ -219,6 +221,21 @@ namespace Discord {
                 return;
             }
             webSocket->Close();
+            lock.unlock();
+            const auto wasClosed = (
+                closePromise.get_future().wait_for(
+                    std::chrono::milliseconds(1000)
+                )
+                == std::future_status::ready
+            );
+            lock.lock();
+            if (!wasClosed) {
+                NotifyDiagnosticMessage(
+                    5,
+                    "Timeout waiting for Discord to close its end of the WebSocket",
+                    lock
+                );
+            }
             webSocket = nullptr;
         }
 
@@ -258,7 +275,13 @@ namespace Discord {
                 return;
             }
             closed = true;
+            NotifyDiagnosticMessage(
+                1,
+                "Disconnected from Discord",
+                lock
+            );
             NotifyClose(lock);
+            closePromise.set_value();
         }
 
         void OnHeartbeat(
@@ -293,7 +316,7 @@ namespace Discord {
                 / 1000.0
             );
             NotifyDiagnosticMessage(
-                0,
+                1,
                 StringExtensions::sprintf(
                     "Heartbeat interval is %lg seconds",
                     heartbeatInterval
@@ -468,8 +491,8 @@ namespace Discord {
     }
 
     void Gateway::Disconnect() {
-        std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
-        impl_->Disconnect();
+        std::unique_lock< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->Disconnect(lock);
     }
 
 }
