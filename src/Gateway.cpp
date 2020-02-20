@@ -12,6 +12,7 @@
 #include <Json/Value.hpp>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace Discord {
 
@@ -27,9 +28,11 @@ namespace Discord {
         Connections::CancelDelegate cancelCurrentOperation;
         bool closed = false;
         bool connecting = false;
-        std::mutex mutex;
+        std::recursive_mutex mutex;
         CloseCallback onClose;
+        TextCallback onText;
         std::unique_ptr< std::future< void > > proceedWithConnect;
+        std::vector< std::string > storedData;
         std::shared_ptr< WebSocket > webSocket;
         std::string webSocketEndpoint;
 
@@ -215,6 +218,21 @@ namespace Discord {
             NotifyClose(lock);
         }
 
+        void OnText(
+            std::string&& message,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            decltype(onText) onTextSample(onText);
+            lock.unlock();
+            if (onTextSample == nullptr) {
+                lock.lock();
+                storedData.push_back(std::move(message));
+            } else {
+                onTextSample(message);
+                lock.lock();
+            }
+        }
+
         void RegisterWebSocketCallbacks() {
             std::weak_ptr< Impl > weakSelf(shared_from_this());
             webSocket->RegisterCloseCallback(
@@ -227,6 +245,16 @@ namespace Discord {
                     self->OnClose(lock);
                 }
             );
+            webSocket->RegisterTextCallback(
+                [weakSelf](std::string&& message){
+                    const auto self = weakSelf.lock();
+                    if (self == nullptr) {
+                        return;
+                    }
+                    std::unique_lock< decltype(self->mutex) > lock(self->mutex);
+                    self->OnText(std::move(message), lock);
+                }
+            );
         }
 
         void RegisterCloseCallback(
@@ -236,6 +264,26 @@ namespace Discord {
             this->onClose = std::move(onClose);
             if (closed) {
                 NotifyClose(lock);
+            }
+        }
+
+        void RegisterTextCallback(
+            TextCallback&& onText,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            this->onText = std::move(onText);
+            if (
+                !storedData.empty()
+                && (this->onText != nullptr)
+            ) {
+                decltype(this->storedData) storedData;
+                storedData.swap(this->storedData);
+                decltype(this->onText) onTextSample(this->onText);
+                lock.unlock();
+                for (auto& message: storedData) {
+                    onTextSample(message);
+                }
+                lock.lock();
             }
         }
 
@@ -274,6 +322,11 @@ namespace Discord {
     void Gateway::RegisterCloseCallback(CloseCallback&& onClose) {
         std::unique_lock< decltype(impl_->mutex) > lock(impl_->mutex);
         impl_->RegisterCloseCallback(std::move(onClose), lock);
+    }
+
+    void Gateway::RegisterTextCallback(TextCallback&& onText) {
+        std::unique_lock< decltype(impl_->mutex) > lock(impl_->mutex);
+        impl_->RegisterTextCallback(std::move(onText), lock);
     }
 
     void Gateway::Disconnect() {
