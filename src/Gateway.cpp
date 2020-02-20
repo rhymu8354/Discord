@@ -102,6 +102,7 @@ namespace Discord {
             const std::string& userAgent,
             std::unique_lock< decltype(mutex) >& lock
         ) {
+            // If told to wait before connecting, wait now.
             if (proceedWithConnect != nullptr) {
                 decltype(proceedWithConnect) lastProceedWithConnect;
                 lastProceedWithConnect.swap(proceedWithConnect);
@@ -109,6 +110,9 @@ namespace Discord {
                 lastProceedWithConnect.get();
                 lock.lock();
             }
+
+            // If we have a cache of the WebSocket URL, try to
+            // use it now to open a WebSocket.
             static const std::string webSocketEndpointSuffix = "/?v=6&encoding=json";
             if (!webSocketEndpoint.empty()) {
                 webSocket = AwaitWebSocketRequest(
@@ -117,23 +121,34 @@ namespace Discord {
                     lock
                 );
             }
+
+            // If we don't have a WebSocket (either we didn't know the
+            // URL, or the attempt to open one using a cached URL failed)
             if (!webSocket) {
+                // Use the GetGateway API to find out
+                // what the WebSocket URL is.
                 webSocketEndpoint = GetGateway(connections, userAgent, lock);
                 if (webSocketEndpoint.empty()) {
                     return false;
                 }
+
+                // Now try to open a WebSocket.
                 webSocket = AwaitWebSocketRequest(
                     connections,
                     {webSocketEndpoint + webSocketEndpointSuffix},
                     lock
                 );
             }
-            if (webSocket) {
-                RegisterWebSocketCallbacks();
-                return true;
-            } else {
+
+            // If we couldn't open a WebSocket by this point, we fail.
+            if (!webSocket) {
                 return false;
             }
+
+            // Set up to receive close events as well as text and binary
+            // messages from the gateway.
+            RegisterWebSocketCallbacks();
+            return true;
         }
 
         std::future< bool > Connect(
