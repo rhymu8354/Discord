@@ -6,7 +6,10 @@ cmake_minimum_required(VERSION 3.8)
 set(This DiscordTests)
 
 set(Sources
-    src/GatewayTests.cpp
+    src/Common.cpp
+    src/Common.hpp
+    src/ConnectionTests.cpp
+    src/HeartbeatTests.cpp
 )
 
 add_executable(${This} ${Sources})

@@ -300,6 +300,9 @@ namespace Discord {
                 ),
                 lock
             );
+
+            // Begin sending regular heartbeats.
+            SendHeartbeat();
         }
 
         void OnText(
@@ -407,6 +410,19 @@ namespace Discord {
                 }
                 lock.lock();
             }
+        }
+
+        void SendHeartbeat() {
+            webSocket->Text(
+                Json::Object({
+                    {"op", 1},
+                    {"d", (
+                        receivedSequenceNumber
+                        ? Json::Value(lastSequenceNumber)
+                        : Json::Value(nullptr)
+                    )},
+                }).ToEncoding()
+            );
         }
 
         void WaitBeforeConnect(std::future< void >&& proceedWithConnect) {
