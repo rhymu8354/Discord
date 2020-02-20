@@ -41,6 +41,9 @@ void MockWebSocket::Binary(std::string&& message) {
 
 void MockWebSocket::Close() {
     closed = true;
+    if (onClose != nullptr) {
+        onClose();
+    }
 }
 
 void MockWebSocket::Text(std::string&& message) {
