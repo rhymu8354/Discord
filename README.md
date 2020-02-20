@@ -10,9 +10,9 @@ The `Discord::Gateway` class is used to interact with Discord gateways.
 ## Supported platforms / recommended toolchains
 
 This is a portable C++11 library which depends on the C++11 compiler, standard
-library, and the [Json](https://github.com/rhymu8354/Json.git) library.  It
-should be supported on almost any platform.  The following are recommended
-toolchains for popular platforms.
+library, and a few custom C++ libraries with similar dependencies.  It should
+be supported on almost any platform.  The following are recommended toolchains
+for popular platforms.
 
 The unit tests which accompany the library depend on the library and its
 dependencies, as well as the [Google
@@ -42,6 +42,9 @@ There are two distinct steps in the build process:
 * [Json](https://github.com/rhymu8354/Json.git) - a library which implements
   [RFC 7159](https://tools.ietf.org/html/rfc7159), "The JavaScript Object
   Notation (JSON) Data Interchange Format".
+* [StringExtensions](https://github.com/rhymu8354/StringExtensions.git) - a
+  library containing C++ string-oriented libraries, many of which ought to be
+  in the standard library, but aren't.
 
 ### Build system generation
 
