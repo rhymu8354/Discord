@@ -43,6 +43,7 @@ namespace Discord {
         bool closed = false;
         std::promise< void > closePromise;
         bool connecting = false;
+        bool heartbeatAckReceived = false;
         double heartbeatInterval = 0.0;
         int heartbeatSchedulerToken = 0;
         std::recursive_mutex mutex;
@@ -230,7 +231,7 @@ namespace Discord {
             if (webSocket == nullptr) {
                 return;
             }
-            webSocket->Close();
+            webSocket->Close(1000);
             lock.unlock();
             const auto wasClosed = (
                 closePromise.get_future().wait_for(
@@ -308,8 +309,37 @@ namespace Discord {
             SendHeartbeat(lock);
         }
 
+        void OnHeartbeatAck(
+            Json::Value&& message,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            NotifyDiagnosticMessage(
+                0,
+                "Received heartbeat ACK",
+                lock
+            );
+            heartbeatAckReceived = true;
+        }
+
         void OnHeartbeatDue(std::unique_lock< decltype(mutex) >& lock) {
             heartbeatSchedulerToken = 0;
+            if (
+                !heartbeatAckReceived
+                && (webSocket != nullptr)
+                && !closed
+            ) {
+                // Use code 4000 because the Discord docs are vague
+                // (they say use a "non-1000 close code)
+                // and discord.py uses code 4000 and we want to be cool
+                // just like them.
+                //
+                // See:
+                // * https://discordapp.com/developers/docs/topics/gateway#connecting-to-the-gateway
+                // * https://github.com/Rapptz/discord.py/blob/b9e6ed28a408cd2798f0a4d96b888c9ecf5e950a/discord/gateway.py#L85
+                webSocket->Close(4000);
+                OnClose(lock);
+                return;
+            }
             SendHeartbeat(lock);
         }
 
@@ -368,6 +398,7 @@ namespace Discord {
             static const std::unordered_map< int, MessageHandler > messageHandlersByOpcode = {
                 {1, &Impl::OnHeartbeat},
                 {10, &Impl::OnHello},
+                {11, &Impl::OnHeartbeatAck},
             };
             const int opcode = messageJson["op"];
             const auto messageHandlersByOpcodeEntry = messageHandlersByOpcode.find(opcode);
@@ -482,6 +513,10 @@ namespace Discord {
             ) {
                 return;
             }
+
+            // Make it clear that we have not yet received the acknowlegment
+            // for this heartbeat.
+            heartbeatAckReceived = false;
 
             // Send a heartbeat to the gateway.
             NotifyDiagnosticMessage(0, "Sending heartbeat", lock);

@@ -39,8 +39,9 @@ void MockWebSocket::RemoteClose() {
 void MockWebSocket::Binary(std::string&& message) {
 }
 
-void MockWebSocket::Close() {
+void MockWebSocket::Close(unsigned int code) {
     closed = true;
+    closeCode = code;
     if (onClose != nullptr) {
         onClose();
     }
@@ -270,6 +271,14 @@ void CommonTextFixture::SendHello() {
             {"d", Json::Object({
                 {"heartbeat_interval", heartbeatIntervalMilliseconds},
             })},
+        }).ToEncoding()
+    );
+}
+
+void CommonTextFixture::SendHeartbeatAck() {
+    webSocket->onText(
+        Json::Object({
+            {"op", 11},
         }).ToEncoding()
     );
 }

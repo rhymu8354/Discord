@@ -91,6 +91,7 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
     // Act
     SendHello();
     webSocket->textSent.clear();
+    SendHeartbeatAck();
     clock->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
     scheduler->WakeUp();
     EXPECT_TRUE(webSocket->AwaitTexts(1));
@@ -105,4 +106,32 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
         }),
         webSocket->textSent
     );
+}
+
+TEST_F(HeartbeatTests, WebSocket_Closed_Non_1000_Status_If_No_Heartbeat_Ack_Between_Heartbeats) {
+    // Arrange
+    ASSERT_TRUE(Connect());
+    ASSERT_FALSE(webSocket->onText == nullptr);
+    std::promise< void > closed;
+    gateway.RegisterCloseCallback(
+        [&]{
+            closed.set_value();
+        }
+    );
+
+    // Act
+    SendHello();
+    webSocket->textSent.clear();
+    clock->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
+    scheduler->WakeUp();
+    const auto wasClosed = (
+        closed.get_future().wait_for(
+            std::chrono::milliseconds(200)
+        ) == std::future_status::ready
+    );
+
+    // Assert
+    EXPECT_TRUE(wasClosed);
+    EXPECT_TRUE(webSocket->closed);
+    EXPECT_NE(1000, webSocket->closeCode);
 }

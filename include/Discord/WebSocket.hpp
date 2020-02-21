@@ -32,7 +32,7 @@ namespace Discord {
         // Methods
     public:
         virtual void Binary(std::string&& message) = 0;
-        virtual void Close() = 0;
+        virtual void Close(unsigned int code) = 0;
         virtual void Text(std::string&& message) = 0;
         virtual void RegisterBinaryCallback(ReceiveCallback&& onBinary) = 0;
         virtual void RegisterCloseCallback(CloseCallback&& onClose) = 0;

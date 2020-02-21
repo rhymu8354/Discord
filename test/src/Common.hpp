@@ -28,6 +28,7 @@ struct MockWebSocket
 {
     // Properties
 
+    unsigned int closeCode = 0;
     bool closed = false;
     std::mutex mutex;
     CloseCallback onClose;
@@ -44,7 +45,7 @@ struct MockWebSocket
     // Discord::WebSocket
 
     virtual void Binary(std::string&& message) override;
-    virtual void Close() override;
+    virtual void Close(unsigned int code) override;
     virtual void Text(std::string&& message) override;
     virtual void RegisterBinaryCallback(ReceiveCallback&& onBinary) override;
     virtual void RegisterCloseCallback(CloseCallback&& onClose) override;
@@ -170,6 +171,7 @@ struct CommonTextFixture
         const std::vector< Discord::Connections::Header >& actual
     );
     void SendHello();
+    void SendHeartbeatAck();
 
     // ::testing::Test
 
