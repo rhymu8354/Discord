@@ -26,10 +26,9 @@ struct ConnectionTests
 
 TEST_F(ConnectionTests, First_Connect_Requests_WebSocket_Endpoint) {
     // Arrange
-    const std::string userAgent = "DiscordBot";
 
     // Act
-    connected = gateway.Connect(connections, userAgent);
+    connected = gateway.Connect(connections, configuration);
 
     // Assert
     ASSERT_TRUE(connections->RequireResourceRequests(1));
@@ -41,7 +40,7 @@ TEST_F(ConnectionTests, First_Connect_Requests_WebSocket_Endpoint) {
     );
     ExpectHeaders(
         std::vector< Discord::Connections::Header >({
-            {"User-Agent", userAgent},
+            {"User-Agent", configuration.userAgent},
         }),
         requestWithPromise.request.headers
     );
@@ -49,11 +48,10 @@ TEST_F(ConnectionTests, First_Connect_Requests_WebSocket_Endpoint) {
 
 TEST_F(ConnectionTests, Connect_Still_Connecting) {
     // Arrange
-    const std::string userAgent = "DiscordBot";
-    connected = gateway.Connect(connections, userAgent);
+    connected = gateway.Connect(connections, configuration);
 
     // Act
-    auto secondConnectResult = gateway.Connect(connections, userAgent);
+    auto secondConnectResult = gateway.Connect(connections, configuration);
 
     // Assert
     EXPECT_FALSE(secondConnectResult.get());
@@ -64,7 +62,7 @@ TEST_F(ConnectionTests, Connect_Fails_If_No_Scheduler_Set) {
     gateway = Discord::Gateway();
 
     // Act
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
     const auto connectedReady = (
         connected.wait_for(
             std::chrono::milliseconds(100)
@@ -82,7 +80,7 @@ TEST_F(ConnectionTests, Connect_Fails_For_Non_OK_WebSocket_Endpoint_Response) {
     std::future< bool > connected;
 
     // Act
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
     ASSERT_TRUE(connections->RequireResourceRequests(1));
     connections->RespondToResourceRequest(0, {404});
 
@@ -109,7 +107,11 @@ TEST_F(ConnectionTests, Connect_Fails_For_Bad_WebSocket_Endpoint_Responses) {
     std::vector< ConnectResultInfo > connectResults;
     for (const auto& responseBody: badWebSocketEndpointResponses) {
         ASSERT_TRUE(
-            ConnectExpectingWebSocketEndpointRequestWithResponse(responseBody, connected)
+            ConnectExpectingWebSocketEndpointRequestWithResponse(
+                responseBody,
+                configuration,
+                connected
+            )
         ) << responseBody;
         ConnectResultInfo connectResultsInfo;
         connectResultsInfo.responseBody = responseBody;
@@ -125,8 +127,7 @@ TEST_F(ConnectionTests, Connect_Fails_For_Bad_WebSocket_Endpoint_Responses) {
 
 TEST_F(ConnectionTests, Connect_Fails_When_Disconnect_During_WebSocket_Endpoint_Request) {
     // Arrange
-    const std::string userAgent = "DiscordBot";
-    connected = gateway.Connect(connections, userAgent);
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     ASSERT_TRUE(connections->RequireResourceRequests(1));
@@ -151,10 +152,9 @@ TEST_F(ConnectionTests, Connect_Fails_When_Disconnect_During_WebSocket_Endpoint_
 
 TEST_F(ConnectionTests, Connect_Fails_When_Disconnect_Before_WebSocket_Endpoint_Request) {
     // Arrange
-    const std::string userAgent = "DiscordBot";
     std::promise< void > proceedWithConnect;
     gateway.WaitBeforeConnect(proceedWithConnect.get_future());
-    connected = gateway.Connect(connections, userAgent);
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     gateway.Disconnect();
@@ -181,6 +181,7 @@ TEST_F(ConnectionTests, First_Connect_Requests_WebSocket_After_Receiving_WebSock
         Json::Object({
             {"url", webSocketEndpoint},
         }).ToEncoding(),
+        configuration,
         connected
     );
 
@@ -194,11 +195,29 @@ TEST_F(ConnectionTests, First_Connect_Requests_WebSocket_After_Receiving_WebSock
     );
 }
 
-TEST_F(ConnectionTests, Connect_Completes_Successfully_Once_WebSocket_Obtained) {
+TEST_F(ConnectionTests, Connect_Fails_When_Disconnect_During_Wait_For_Hello) {
+    // Arrange
+    ASSERT_TRUE(ConnectWebSocket(configuration));
+
+    // Act
+    gateway.Disconnect();
+    const auto connectedReady = (
+        connected.wait_for(
+            std::chrono::milliseconds(100)
+        )
+        == std::future_status::ready
+    );
+
+    // Assert
+    ASSERT_TRUE(connectedReady);
+    EXPECT_FALSE(connected.get());
+}
+
+TEST_F(ConnectionTests, Connect_Completes_Successfully_Once_Session_Established) {
     // Arrange
 
     // Act
-    const auto connected = Connect();
+    const auto connected = Connect(configuration);
 
     // Assert
     EXPECT_TRUE(connected);
@@ -206,10 +225,10 @@ TEST_F(ConnectionTests, Connect_Completes_Successfully_Once_WebSocket_Obtained) 
 
 TEST_F(ConnectionTests, Connect_Already_Connected) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
     const auto connectedReady = (
         connected.wait_for(
             std::chrono::milliseconds(100)
@@ -224,7 +243,7 @@ TEST_F(ConnectionTests, Connect_Already_Connected) {
 
 TEST_F(ConnectionTests, Disconnect) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
     gateway.Disconnect();
@@ -235,11 +254,11 @@ TEST_F(ConnectionTests, Disconnect) {
 
 TEST_F(ConnectionTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_First) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
     gateway.Disconnect();
 
     // Act
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
 
     // Assert
     EXPECT_FALSE(connections->RequireResourceRequests(2));
@@ -248,11 +267,11 @@ TEST_F(ConnectionTests, Second_Connect_Does_Not_Request_WebSocket_Endpoint_At_Fi
 TEST_F(ConnectionTests, Second_Connect_Requests_WebSocket) {
     // Arrange
     const std::string webSocketEndpoint = "wss://gateway.discord.gg";
-    ASSERT_TRUE(Connect(webSocketEndpoint));
+    ASSERT_TRUE(Connect(configuration, webSocketEndpoint));
     gateway.Disconnect();
 
     // Act
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
 
     // Assert
     EXPECT_TRUE(connections->RequireWebSocketRequests(2));
@@ -265,10 +284,9 @@ TEST_F(ConnectionTests, Second_Connect_Requests_WebSocket) {
 
 TEST_F(ConnectionTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_Open_Fails) {
     // Arrange
-    const std::string userAgent = "DiscordBot";
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
     gateway.Disconnect();
-    connected = gateway.Connect(connections, userAgent);
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     ASSERT_TRUE(connections->RequireWebSocketRequests(2));
@@ -285,7 +303,7 @@ TEST_F(ConnectionTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_
     );
     ExpectHeaders(
         std::vector< Discord::Connections::Header >({
-            {"User-Agent", userAgent},
+            {"User-Agent", configuration.userAgent},
         }),
         requestWithPromise.request.headers
     );
@@ -293,9 +311,9 @@ TEST_F(ConnectionTests, Second_Connect_Requests_WebSocket_Endpoint_If_WebSocket_
 
 TEST_F(ConnectionTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
     gateway.Disconnect();
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     ASSERT_TRUE(connections->RequireWebSocketRequests(2));
@@ -314,11 +332,11 @@ TEST_F(ConnectionTests, Second_Connect_Second_WebSocket_Attempt_When_First_WebSo
     EXPECT_TRUE(secondWebSocketRequested);
 }
 
-TEST_F(ConnectionTests, Second_Connect_Succeeds_After_Second_WebSocket_Connected_When_First_WebSocket_Open_Fails) {
+TEST_F(ConnectionTests, Second_Connect_Succeeds_After_Session_Established_When_First_WebSocket_Open_Fails) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
     gateway.Disconnect();
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     ASSERT_TRUE(connections->RequireWebSocketRequests(2));
@@ -341,15 +359,15 @@ TEST_F(ConnectionTests, Second_Connect_Succeeds_After_Second_WebSocket_Connected
     );
 
     // Assert
-    EXPECT_TRUE(connectedReady);
+    ASSERT_TRUE(connectedReady);
     EXPECT_TRUE(connected.get());
 }
 
 TEST_F(ConnectionTests, Second_Connect_Fails_After_Failed_Second_WebSocket_Attempt_When_First_WebSocket_Open_Fails) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
     gateway.Disconnect();
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
 
     // Act
     ASSERT_TRUE(connections->RequireWebSocketRequests(2));
@@ -378,7 +396,7 @@ TEST_F(ConnectionTests, Second_Connect_Fails_After_Failed_Second_WebSocket_Attem
 
 TEST_F(ConnectionTests, Close_Callback_When_WebSocket_Closed_After_Callback_Registered) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
     bool closed = false;
@@ -395,7 +413,7 @@ TEST_F(ConnectionTests, Close_Callback_When_WebSocket_Closed_After_Callback_Regi
 
 TEST_F(ConnectionTests, Close_Callback_When_WebSocket_Closed_Before_Callback_Registered) {
     // Arrange
-    ASSERT_TRUE(Connect());
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
     webSocket->RemoteClose();

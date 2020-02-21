@@ -25,28 +25,25 @@ struct HeartbeatTests
 
 TEST_F(HeartbeatTests, Heartbeat_Sent_After_Hello_Received) {
     // Arrange
-    ASSERT_TRUE(Connect());
-    ASSERT_FALSE(webSocket->onText == nullptr);
+    ASSERT_TRUE(ConnectWebSocket(configuration));
 
     // Act
     SendHello();
 
     // Assert
+    ASSERT_GE(webSocket->textSent.size(), 1);
     EXPECT_EQ(
-        std::vector< std::string >({
-            Json::Object({
-                {"op", 1},
-                {"d", nullptr},
-            }).ToEncoding(),
-        }),
-        webSocket->textSent
+        Json::Object({
+            {"op", 1},
+            {"d", nullptr},
+        }).ToEncoding(),
+        webSocket->textSent[0]
     );
 }
 
 TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Received) {
     // Arrange
-    ASSERT_TRUE(Connect());
-    ASSERT_FALSE(webSocket->onText == nullptr);
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
     webSocket->onText(
@@ -70,12 +67,11 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Received) {
 
 TEST_F(HeartbeatTests, Heartbeat_Not_Sent_Before_Heartbeat_Interval) {
     // Arrange
-    ASSERT_TRUE(Connect());
-    ASSERT_FALSE(webSocket->onText == nullptr);
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
-    SendHello();
     webSocket->textSent.clear();
+    SendHeartbeatAck();
     clock->currentTime += (double)(heartbeatIntervalMilliseconds - 1) / 1000.0;
     scheduler->WakeUp();
 
@@ -85,11 +81,9 @@ TEST_F(HeartbeatTests, Heartbeat_Not_Sent_Before_Heartbeat_Interval) {
 
 TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
     // Arrange
-    ASSERT_TRUE(Connect());
-    ASSERT_FALSE(webSocket->onText == nullptr);
+    ASSERT_TRUE(Connect(configuration));
 
     // Act
-    SendHello();
     webSocket->textSent.clear();
     SendHeartbeatAck();
     clock->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
@@ -110,8 +104,7 @@ TEST_F(HeartbeatTests, Heartbeat_Sent_After_Heartbeat_Interval) {
 
 TEST_F(HeartbeatTests, WebSocket_Closed_Non_1000_Status_If_No_Heartbeat_Ack_Between_Heartbeats) {
     // Arrange
-    ASSERT_TRUE(Connect());
-    ASSERT_FALSE(webSocket->onText == nullptr);
+    ASSERT_TRUE(Connect(configuration));
     std::promise< void > closed;
     gateway.RegisterCloseCallback(
         [&]{
@@ -120,7 +113,6 @@ TEST_F(HeartbeatTests, WebSocket_Closed_Non_1000_Status_If_No_Heartbeat_Ack_Betw
     );
 
     // Act
-    SendHello();
     webSocket->textSent.clear();
     clock->currentTime += (double)(heartbeatIntervalMilliseconds + 1) / 1000.0;
     scheduler->WakeUp();

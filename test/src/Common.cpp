@@ -68,6 +68,7 @@ void MockWebSocket::RegisterCloseCallback(CloseCallback&& onClose) {
 
 void MockWebSocket::RegisterTextCallback(ReceiveCallback&& onText) {
     this->onText = std::move(onText);
+    onTextRegistered.set_value();
 }
 
 bool MockConnections::ExpectSoon(
@@ -112,8 +113,11 @@ void MockConnections::RespondToResourceRequest(
 
 void MockConnections::RespondToWebSocketRequest(
     size_t requestIndex,
-    std::shared_ptr< Discord::WebSocket > webSocket
+    std::shared_ptr< MockWebSocket > webSocket
 ) {
+    if (webSocket != nullptr) {
+        webSocket->onTextRegistered = std::promise< void >();
+    }
     webSocketRequests[requestIndex]->webSocketPromise.set_value(std::move(webSocket));
     webSocketRequests[requestIndex]->responded = true;
 }
@@ -193,12 +197,44 @@ double MockClock::GetCurrentTime() {
     return currentTime;
 }
 
+bool CommonTextFixture::Connect(
+    const Discord::Gateway::Configuration& configuration,
+    const std::string webSocketEndpoint
+) {
+    if (!ConnectWebSocket(configuration, webSocketEndpoint)) {
+        return false;
+    }
+    SendHello();
+    EXPECT_EQ(
+        std::vector< std::string >({
+            Json::Object({
+                {"op", 1},
+                {"d", nullptr},
+            }).ToEncoding(),
+            Json::Object({
+                {"op", 2},
+                {"d", Json::Object({
+                    {"token", configuration.token},
+                    {"properties", Json::Object({
+                        {"$os", configuration.os},
+                        {"$browser", configuration.browser},
+                        {"$device", configuration.device},
+                    })},
+                })},
+            }).ToEncoding(),
+        }),
+        webSocket->textSent
+    );
+    return true;
+}
+
 bool CommonTextFixture::ConnectExpectingWebSocketEndpointRequestWithResponse(
     const std::string& webSocketEndpointRequestResponse,
+    const Discord::Gateway::Configuration& configuration,
     std::future< bool >& connected
 ) {
     const auto nextResourceRequest = connections->resourceRequests.size();
-    connected = gateway.Connect(connections, "DiscordBot");
+    connected = gateway.Connect(connections, configuration);
     const auto resourceRequested = connections->RequireResourceRequests(nextResourceRequest + 1);
     if (!resourceRequested) {
         return false;
@@ -211,12 +247,16 @@ bool CommonTextFixture::ConnectExpectingWebSocketEndpointRequestWithResponse(
     return true;
 }
 
-bool CommonTextFixture::Connect(const std::string webSocketEndpoint) {
+bool CommonTextFixture::ConnectWebSocket(
+    const Discord::Gateway::Configuration& configuration,
+    const std::string webSocketEndpoint
+) {
     const auto nextWebSocketRequest = connections->webSocketRequests.size();
     const auto resourceRequested = ConnectExpectingWebSocketEndpointRequestWithResponse(
         Json::Object({
             {"url", webSocketEndpoint},
         }).ToEncoding(),
+        configuration,
         connected
     );
     EXPECT_TRUE(resourceRequested);
@@ -229,17 +269,18 @@ bool CommonTextFixture::Connect(const std::string webSocketEndpoint) {
         return false;
     }
     connections->RespondToWebSocketRequest(nextWebSocketRequest, webSocket);
-    const auto connectedReady = (
-        connected.wait_for(
-            std::chrono::milliseconds(100)
-        )
-        == std::future_status::ready
+    const auto onTextRegistered = webSocket->onTextRegistered.get_future().wait_for(
+        std::chrono::milliseconds(100)
     );
-    EXPECT_TRUE(connectedReady);
-    if (!connectedReady) {
+    EXPECT_EQ(std::future_status::ready, onTextRegistered);
+    if (onTextRegistered != std::future_status::ready) {
         return false;
     }
-    return connected.get();
+    EXPECT_FALSE(webSocket->onText == nullptr);
+    if (webSocket->onText == nullptr) {
+        return false;
+    }
+    return true;
 }
 
 void CommonTextFixture::ExpectHeaders(
@@ -287,6 +328,7 @@ void CommonTextFixture::SetUp() {
     ::testing::Test::SetUp();
     scheduler->SetClock(clock);
     gateway.SetScheduler(scheduler);
+    configuration.userAgent = "DiscordBot";
 }
 
 void CommonTextFixture::TearDown() {

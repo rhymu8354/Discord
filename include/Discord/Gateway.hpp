@@ -24,6 +24,13 @@ namespace Discord {
         // Types
     public:
         using CloseCallback = std::function< void() >;
+        struct Configuration {
+            std::string browser;
+            std::string device;
+            std::string os;
+            std::string token;
+            std::string userAgent;
+        };
         using DiagnosticCallback = std::function<
             void(
                 size_t level,
@@ -52,7 +59,7 @@ namespace Discord {
 
         std::future< bool > Connect(
             const std::shared_ptr< Connections >& connections,
-            const std::string& userAgent
+            const Configuration& configuration
         );
 
         void RegisterCloseCallback(CloseCallback&& onClose);

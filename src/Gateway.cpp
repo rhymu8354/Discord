@@ -38,7 +38,8 @@ namespace Discord {
 
         // Properties
 
-        bool cancelConnection = false;
+        bool awaitingHello = false;
+        bool disconnect = false;
         Connections::CancelDelegate cancelCurrentOperation;
         bool closed = false;
         std::promise< void > closePromise;
@@ -46,6 +47,7 @@ namespace Discord {
         bool heartbeatAckReceived = false;
         double heartbeatInterval = 0.0;
         int heartbeatSchedulerToken = 0;
+        std::promise< void > helloPromise;
         std::recursive_mutex mutex;
         CloseCallback onClose;
         DiagnosticCallback onDiagnosticMessage;
@@ -60,12 +62,22 @@ namespace Discord {
 
         // Methods
 
+        void AwaitHelloPromise(std::unique_lock< decltype(mutex) >& lock) {
+            cancelCurrentOperation = [&]{
+                helloPromise.set_value();
+            };
+            lock.unlock();
+            helloPromise.get_future().wait();
+            lock.lock();
+            cancelCurrentOperation = nullptr;
+        }
+
         Connections::Response AwaitResourceRequest(
             const std::shared_ptr< Connections >& connections,
             Connections::ResourceRequest&& request,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            if (cancelConnection) {
+            if (disconnect) {
                 return {499};
             }
             auto transaction = connections->QueueResourceRequest(request);
@@ -74,7 +86,7 @@ namespace Discord {
             auto response = transaction.response.get();
             lock.lock();
             cancelCurrentOperation = nullptr;
-            if (cancelConnection) {
+            if (disconnect) {
                 response.status = 499;
             }
             return response;
@@ -85,7 +97,7 @@ namespace Discord {
             Connections::WebSocketRequest&& request,
             std::unique_lock< decltype(mutex) >& lock
         ) {
-            if (cancelConnection) {
+            if (disconnect) {
                 return nullptr;
             }
             auto transaction = connections->QueueWebSocketRequest(request);
@@ -94,7 +106,7 @@ namespace Discord {
             const auto webSocket = transaction.webSocket.get();
             lock.lock();
             cancelCurrentOperation = nullptr;
-            if (cancelConnection) {
+            if (disconnect) {
                 return nullptr;
             }
             return webSocket;
@@ -124,7 +136,7 @@ namespace Discord {
 
         bool CompleteConnect(
             const std::shared_ptr< Connections >& connections,
-            const std::string& userAgent,
+            const Configuration& configuration,
             std::unique_lock< decltype(mutex) >& lock
         ) {
             // If told to wait before connecting, wait now.
@@ -152,7 +164,11 @@ namespace Discord {
             if (!webSocket) {
                 // Use the GetGateway API to find out
                 // what the WebSocket URL is.
-                webSocketEndpoint = GetGateway(connections, userAgent, lock);
+                webSocketEndpoint = GetGateway(
+                    connections,
+                    configuration.userAgent,
+                    lock
+                );
                 if (webSocketEndpoint.empty()) {
                     return false;
                 }
@@ -171,19 +187,38 @@ namespace Discord {
             }
 
             // Set up to receive close events as well as text and binary
-            // messages from the gateway.
+            // messages from the gateway, expecting a "hello" message from the
+            // gateway immediately afterward.
+            awaitingHello = true;
+            helloPromise = std::promise< void >();
+            RegisterWebSocketCallbacks();
+            AwaitHelloPromise(lock);
+            if (disconnect) {
+                return false;
+            }
+
+            // Send identify or resume message.
+            SendIdentify(configuration, lock);
+
+            // Wait for either ready or invalid session message.
+
+            // If invalid session message received:
+            // * If last message we sent was identify, fail connection.
+            // * If last message we sent was resume, abandon session and wait
+            //   1-5 seconds before trying again.
+
+            // At this point the session is (re)established.
             NotifyDiagnosticMessage(
                 1,
                 "Connected to Discord",
                 lock
             );
-            RegisterWebSocketCallbacks();
             return true;
         }
 
         std::future< bool > Connect(
             const std::shared_ptr< Connections >& connections,
-            const std::string& userAgent
+            const Configuration& configuration
         ) {
             // Fail if no scheduler is set, or if we have a WebSocket or are in
             // the process of connecting.
@@ -199,24 +234,27 @@ namespace Discord {
             closed = false;
             closePromise = std::promise< void >();
             connecting = true;
-            cancelConnection = false;
+            disconnect = false;
             auto impl(shared_from_this());
             return std::async(
                 std::launch::async,
-                [impl, connections, userAgent]{
-                    return impl->ConnectAsync(connections, userAgent);
+                [impl, connections, configuration]{
+                    return impl->ConnectAsync(
+                        connections,
+                        configuration
+                    );
                 }
             );
         }
 
         bool ConnectAsync(
             const std::shared_ptr< Connections >& connections,
-            const std::string& userAgent
+            const Configuration& configuration
         ) {
             std::unique_lock< decltype(mutex) > lock(mutex);
             const auto connected = CompleteConnect(
                 connections,
-                userAgent,
+                configuration,
                 lock
             );
             connecting = false;
@@ -224,7 +262,7 @@ namespace Discord {
         }
 
         void Disconnect(std::unique_lock< decltype(mutex) >& lock) {
-            cancelConnection = true;
+            disconnect = true;
             if (cancelCurrentOperation != nullptr) {
                 cancelCurrentOperation();
             }
@@ -347,6 +385,12 @@ namespace Discord {
             Json::Value&& message,
             std::unique_lock< decltype(mutex) >& lock
         ) {
+            // Catch and discard unexpected "hello" messages.
+            if (!awaitingHello) {
+                return;
+            }
+            awaitingHello = false;
+
             // Discord tells us the interval in milliseconds.
             // We store it as a floating-point number of seconds.
             heartbeatInterval = (
@@ -364,6 +408,10 @@ namespace Discord {
 
             // Begin sending regular heartbeats.
             SendHeartbeat(lock);
+
+            // Unblock CompleteConnect to proceed to the next step in the
+            // connection process now that a hello message has been received.
+            helloPromise.set_value();
         }
 
         void OnText(
@@ -542,6 +590,26 @@ namespace Discord {
             }
         }
 
+        void SendIdentify(
+            const Configuration& configuration,
+            std::unique_lock< decltype(mutex) >& lock
+        ) {
+            NotifyDiagnosticMessage(0, "Sending identify", lock);
+            webSocket->Text(
+                Json::Object({
+                    {"op", 2},
+                    {"d", Json::Object({
+                        {"token", configuration.token},
+                        {"properties", Json::Object({
+                            {"$os", configuration.os},
+                            {"$browser", configuration.browser},
+                            {"$device", configuration.device},
+                        })},
+                    })},
+                }).ToEncoding()
+            );
+        }
+
         void UnscheduleAll() {
             UnscheduleHeartbeat();
         }
@@ -587,10 +655,10 @@ namespace Discord {
 
     std::future< bool > Gateway::Connect(
         const std::shared_ptr< Connections >& connections,
-        const std::string& userAgent
+        const Configuration& configuration
     ) {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
-        return impl_->Connect(connections, userAgent);
+        return impl_->Connect(connections, configuration);
     }
 
     void Gateway::RegisterCloseCallback(CloseCallback&& onClose) {
